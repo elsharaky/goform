@@ -88,28 +88,6 @@ func (r *tagResolver) firstExistingTag(sf reflect.StructField) (tagOptions, bool
 	return tagOptions{}, false
 }
 
-// unmarshalTagNames returns all non-skip tag names for a field, in priority
-// order, plus the Go field name as a fallback. If the field is skipped (first
-// tag in priority is "-"), skip is returned true and names is nil.
-func (r *tagResolver) unmarshalTagNames(sf reflect.StructField) (names []string, skip bool) {
-	for _, tag := range r.priority {
-		val, ok := sf.Tag.Lookup(tag)
-		if !ok {
-			continue
-		}
-		opts := parseTagOptions(val)
-		if opts.Skip {
-			return nil, true
-		}
-		if opts.Name != "" {
-			names = append(names, opts.Name)
-		}
-	}
-	// Always include the Go field name as a fallback (matches buildUnmarshalIndex).
-	names = append(names, sf.Name)
-	return names, false
-}
-
 // isSkipped reports whether a field should be excluded from form handling.
 // Anonymous embedded struct fields are never skipped at this level (they are
 // recursed into by callers).
@@ -278,21 +256,22 @@ func (r *tagResolver) buildUnmarshalIndexUncached(t reflect.Type) unmarshalIndex
 		// (possibly lowercase) type name.
 		if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
 			inner := r.buildUnmarshalIndex(sf.Type)
-			for k, v := range inner.fields {
-				// The promoted field's Index is relative to the EMBEDDED type;
-				// prepend this anonymous field's own index so that a later
-				// FieldByIndex(v.Index) resolves on the parent struct. Copy
-				// into a fresh slice: inner (and its entries) live in the shared
-				// cache, and the cache entry must never be mutated.
-				idx := make([]int, 0, len(v.Index)+len(sf.Index))
-				idx = append(idx, sf.Index...)
-				idx = append(idx, v.Index...)
-				v.Index = idx
-				register(k, v)
-			}
-			for k := range inner.ambiguous {
-				ambiguous[k] = true
-			}
+			flattenIndex(inner, sf.Index, register, ambiguous)
+			continue
+		}
+
+		// Pointer-embedded structs (*Inner) flatten the same way, mirroring
+		// encoding/json. The pointer field itself is additionally registered
+		// under its tag/type name so "Inner.sub" keys produced by earlier
+		// encoders keep decoding. Unexported embeds and *File are excluded: the
+		// former cannot be allocated through the exported field path, and the
+		// latter stays a leaf File addressed by its own name.
+		if sf.Anonymous && sf.IsExported() && sf.Type.Kind() == reflect.Pointer &&
+			sf.Type.Elem().Kind() == reflect.Struct &&
+			sf.Type.Elem() != reflect.TypeOf(File{}) {
+			inner := r.buildUnmarshalIndex(sf.Type.Elem())
+			flattenIndex(inner, sf.Index, register, ambiguous)
+			r.registerFieldNames(sf, register)
 			continue
 		}
 
@@ -304,19 +283,46 @@ func (r *tagResolver) buildUnmarshalIndexUncached(t reflect.Type) unmarshalIndex
 			continue
 		}
 
-		for _, tag := range r.priority {
-			val, ok := sf.Tag.Lookup(tag)
-			if !ok {
-				continue
-			}
-			opts := parseTagOptions(val)
-			if opts.Name != "" {
-				register(opts.Name, sf)
-			}
-		}
-
-		register(sf.Name, sf)
+		r.registerFieldNames(sf, register)
 	}
 
 	return unmarshalIndex{fields: fields, ambiguous: ambiguous}
+}
+
+// registerFieldNames registers every tag name and the Go field name for a
+// struct field in priority order.
+func (r *tagResolver) registerFieldNames(sf reflect.StructField, register func(string, reflect.StructField)) {
+	for _, tag := range r.priority {
+		val, ok := sf.Tag.Lookup(tag)
+		if !ok {
+			continue
+		}
+		opts := parseTagOptions(val)
+		if opts.Name != "" {
+			register(opts.Name, sf)
+		}
+	}
+
+	register(sf.Name, sf)
+}
+
+// flattenIndex merges an embedded type's unmarshal index into the parent
+// namespace, prepending the embed field's index to each promoted field so that
+// FieldByIndex-like walks resolve on the parent struct. Copies are made
+// because inner (and its entries) may live in the shared cache and must never
+// be mutated.
+func flattenIndex(inner unmarshalIndex, embedIndex []int, register func(string, reflect.StructField), ambiguous map[string]bool) {
+	for k, v := range inner.fields {
+		// The promoted field's Index is relative to the EMBEDDED type;
+		// prepend this anonymous field's own index so that a later
+		// FieldByIndex(v.Index) resolves on the parent struct.
+		idx := make([]int, 0, len(v.Index)+len(embedIndex))
+		idx = append(idx, embedIndex...)
+		idx = append(idx, v.Index...)
+		v.Index = idx
+		register(k, v)
+	}
+	for k := range inner.ambiguous {
+		ambiguous[k] = true
+	}
 }

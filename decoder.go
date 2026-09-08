@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -110,7 +111,7 @@ func (d *Decoder) Unmarshal(values url.Values, v any) error {
 	if err := d.unmarshalValues(values, elem, 0); err != nil {
 		return err
 	}
-	return d.applyDefaultsAndRequired(elem, valuesKeys(values), 0)
+	return d.applyDefaultsAndRequired(elem, d.providedFields(elem, formKeys(values), 0), nil, 0)
 }
 
 // UnmarshalMultipart parses an http.Request's multipart form into the struct
@@ -144,7 +145,11 @@ func (d *Decoder) UnmarshalMultipartForm(mf *multipart.Form, v any) error {
 	if err := d.unmarshalFiles(mf, elem); err != nil {
 		return err
 	}
-	return d.applyDefaultsAndRequired(elem, multipartKeys(mf), 0)
+	keys := formKeys(values)
+	for k := range mf.File {
+		keys = append(keys, k)
+	}
+	return d.applyDefaultsAndRequired(elem, d.providedFields(elem, keys, 0), nil, 0)
 }
 
 // unmarshalValues iterates over the submitted keys and assigns values,
@@ -170,7 +175,7 @@ func (d *Decoder) unmarshalValues(values url.Values, dst reflect.Value, depth in
 			continue
 		}
 
-		fieldVal := dst.FieldByIndex(field.Index)
+		fieldVal := fieldByIndexAlloc(dst, field.Index)
 		if !fieldVal.CanSet() {
 			continue
 		}
@@ -181,6 +186,41 @@ func (d *Decoder) unmarshalValues(values url.Values, dst reflect.Value, depth in
 	}
 
 	return nil
+}
+
+// fieldByIndexAlloc resolves a struct field by index path, allocating nil
+// embedded pointers along the way so promoted fields of pointer-embedded
+// structs can be written (mirroring encoding/json). If a nil embedded pointer
+// cannot be allocated (unexported field), it is returned as-is.
+func fieldByIndexAlloc(v reflect.Value, index []int) reflect.Value {
+	for _, i := range index {
+		for v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				if !v.CanSet() {
+					return v
+				}
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		v = v.Field(i)
+	}
+	return v
+}
+
+// fieldByIndexRO resolves a struct field by index path without writing; it
+// reports false when a nil embedded pointer blocks traversal.
+func fieldByIndexRO(v reflect.Value, index []int) (reflect.Value, bool) {
+	for _, i := range index {
+		for v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				return reflect.Value{}, false
+			}
+			v = v.Elem()
+		}
+		v = v.Field(i)
+	}
+	return v, true
 }
 
 // decodePath walks the parsed key tokens and assigns the leaf value(s).
@@ -231,9 +271,12 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 			}
 			child, ok := childIndex.fields[head.name]
 			if !ok {
-				return &DecodingError{FieldPath: head.name, Err: errors.New("unknown field")}
+				if d.cfg.strict {
+					return &DecodingError{FieldPath: head.name, Err: errors.New("unknown field")}
+				}
+				return nil
 			}
-			childVal := field.FieldByIndex(child.Index)
+			childVal := fieldByIndexAlloc(field, child.Index)
 			return d.decodePath(childVal, tail, vals, depth+1, path+"."+head.name)
 		case reflect.Slice, reflect.Array:
 			// slice of struct accessed without index (rare) — treat as append
@@ -242,12 +285,18 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 			// map accessed via .field — not supported; skip
 			return nil
 		default:
-			return &DecodingError{FieldPath: head.name, Err: errors.New("cannot descend into scalar")}
+			if d.cfg.strict {
+				return &DecodingError{FieldPath: head.name, Err: errors.New("cannot descend into scalar")}
+			}
+			return nil
 		}
 
 	case "index":
 		if field.Kind() != reflect.Slice && field.Kind() != reflect.Array {
-			return &DecodingError{FieldPath: head.name, Err: errors.New("index on non-indexable field")}
+			if d.cfg.strict {
+				return &DecodingError{FieldPath: head.name, Err: errors.New("index on non-indexable field")}
+			}
+			return nil
 		}
 		idx, err := strconv.Atoi(head.name)
 		if err != nil {
@@ -282,7 +331,10 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 
 	case "mapkey":
 		if field.Kind() != reflect.Map {
-			return &DecodingError{FieldPath: head.name, Err: errors.New("mapkey on non-map field")}
+			if d.cfg.strict {
+				return &DecodingError{FieldPath: head.name, Err: errors.New("mapkey on non-map field")}
+			}
+			return nil
 		}
 		if field.IsNil() {
 			field.Set(reflect.MakeMap(field.Type()))
@@ -386,15 +438,17 @@ func (d *Decoder) assignLeaf(field reflect.Value, vals []string) error {
 }
 
 // assignScalarTo assigns a single string to a target field, honoring custom
-// converters and TextUnmarshaler.
+// converters and TextUnmarshaler. Converters take priority so slice elements,
+// map keys, and defaults follow the same precedence as full-leaf assignment
+// (assignLeaf) and the encoder — a registered converter always wins.
 func (d *Decoder) assignScalarTo(field reflect.Value, value string) error {
+	if conv, ok := d.cfg.converters[field.Type()]; ok {
+		return conv.Unmarshal(value, field)
+	}
 	if field.CanAddr() {
 		if tu, ok := field.Addr().Interface().(encoding.TextUnmarshaler); ok && d.cfg.textAware {
 			return tu.UnmarshalText([]byte(value))
 		}
-	}
-	if conv, ok := d.cfg.converters[field.Type()]; ok {
-		return conv.Unmarshal(value, field)
 	}
 	return parseScalar(value, field)
 }
@@ -418,103 +472,40 @@ func (d *Decoder) readFile(fh *multipart.FileHeader, name string) (File, error) 
 	return f, nil
 }
 
-// unmarshalFiles populates File and []File fields from multipart file parts.
+// unmarshalFiles populates File, []File, and *File fields from multipart file
+// parts. Part names are routed through the destination struct exactly like
+// value keys: a submitted part "meta.avatar" descends from the Meta field to
+// its inner Avatar field, mirroring the dotted keys the encoder emits for
+// nested structs (so nested File fields round-trip instead of being dropped).
+// Each level resolves the part's base token through the flattened per-type
+// index, which handles embedded promoted fields and every tag alias the same
+// way unmarshalValues does.
 func (d *Decoder) unmarshalFiles(mf *multipart.Form, dst reflect.Value) error {
 	if len(mf.File) == 0 {
 		return nil
 	}
 
-	// Reject file parts whose name resolves to more than one field (an
-	// embedded promoted File and an outer File sharing a tag, or two sibling
-	// File fields sharing a tag): they would otherwise be consumed by every
-	// matching field. Mirrors the value-path ambiguity check; the flattened
-	// index covers both sibling and embedded/outer collisions.
-	index := d.resolver.buildUnmarshalIndex(dst.Type())
-	for part := range mf.File {
-		if index.ambiguous[part] {
-			return &DecodingError{Key: part,
-				Err: fmt.Errorf("ambiguous field %q matches more than one field", part)}
-		}
-	}
-
-	rt := dst.Type()
 	consumed := make(map[string]bool, len(mf.File))
-	for i := range rt.NumField() {
-		sf := rt.Field(i)
+	// Deterministic order: a part name is unique, but two different names can
+	// both resolve to the same field (e.g. "doc" and "Doc"); sorting keeps the
+	// winning value stable across runs.
+	parts := make([]string, 0, len(mf.File))
+	for part := range mf.File {
+		parts = append(parts, part)
+	}
+	sort.Strings(parts)
 
-		if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
-			if sf.Type == reflect.TypeOf(File{}) {
-				continue
-			}
-			if err := d.unmarshalFiles(mf, dst.Field(i)); err != nil {
-				return err
-			}
+	for _, part := range parts {
+		if consumed[part] {
 			continue
 		}
-
-		if !sf.IsExported() {
-			continue
+		base, rest := parseKeyPath(part)
+		used, err := d.consumeFilePart(dst, base, rest, mf.File[part], part, 0)
+		if err != nil {
+			return err
 		}
-
-		// Resolve all tag names that can address this field (form, json, xml,
-		// protobuf, plus the Go field name) — matching how value fields work.
-		names, skip := d.resolver.unmarshalTagNames(sf)
-		if skip {
-			continue
-		}
-
-		fieldVal := dst.Field(i)
-		if !fieldVal.CanSet() {
-			continue
-		}
-
-		var files []*multipart.FileHeader
-		var matchedName string
-		for _, name := range names {
-			if got, ok := mf.File[name]; ok {
-				files = got
-				matchedName = name
-				break
-			}
-		}
-
-		switch {
-		case fieldVal.Type() == reflect.TypeOf(File{}):
-			if len(files) > 0 {
-				f, err := d.readFile(files[0], matchedName)
-				if err != nil {
-					return err
-				}
-				fieldVal.Set(reflect.ValueOf(f))
-				consumed[matchedName] = true
-			}
-		case fieldVal.Type() == reflect.TypeOf([]File{}):
-			if len(files) == 0 {
-				continue
-			}
-			out := make([]File, 0, len(files))
-			for _, fh := range files {
-				f, err := d.readFile(fh, matchedName)
-				if err != nil {
-					return err
-				}
-				out = append(out, f)
-			}
-			fieldVal.Set(reflect.ValueOf(out))
-			consumed[matchedName] = true
-		case fieldVal.Kind() == reflect.Pointer && fieldVal.Type().Elem() == reflect.TypeOf(File{}):
-			if len(files) == 0 {
-				continue
-			}
-			f, err := d.readFile(files[0], matchedName)
-			if err != nil {
-				return err
-			}
-			if fieldVal.IsNil() {
-				fieldVal.Set(reflect.New(reflect.TypeOf(File{})))
-			}
-			fieldVal.Elem().Set(reflect.ValueOf(f))
-			consumed[matchedName] = true
+		if used {
+			consumed[part] = true
 		}
 	}
 
@@ -531,36 +522,225 @@ func (d *Decoder) unmarshalFiles(mf *multipart.Form, dst reflect.Value) error {
 	return nil
 }
 
-// valuesKeys collects the base keys submitted in a url.Values.
-func valuesKeys(values url.Values) map[string]bool {
-	keys := make(map[string]bool, len(values))
+// consumeFilePart routes a single submitted file part into the File field it
+// addresses. It returns whether the part was consumed (matched a File field).
+// base is the next key token to resolve within dst; rest holds any remaining
+// dotted/indexed tokens. Each level uses the flattened per-type index, so a
+// part "meta.avatar" resolves meta at the root and avatar inside the Meta
+// struct. Ambiguous bases — two sibling File fields sharing a tag, or an
+// embedded promoted File plus an outer File sharing a tag — are rejected so
+// the part is not consumed by every matching field.
+func (d *Decoder) consumeFilePart(dst reflect.Value, base string, rest []keyToken, headers []*multipart.FileHeader, part string, depth int) (bool, error) {
+	cur := dst
+	token := base
+
+	for {
+		if depth > d.cfg.maxDepth {
+			return false, &DecodingError{Key: part, Err: ErrMaxDepthExceeded}
+		}
+
+		index := d.resolver.buildUnmarshalIndex(cur.Type())
+		if index.ambiguous[token] {
+			return false, &DecodingError{Key: part,
+				Err: fmt.Errorf("ambiguous field %q matches more than one field", token)}
+		}
+		sf, ok := index.fields[token]
+		if !ok {
+			return false, nil
+		}
+
+		fieldVal := fieldByIndexAlloc(cur, sf.Index)
+		if !fieldVal.CanSet() {
+			return false, nil
+		}
+
+		// Pointer-to-struct fields are dereferenced (allocating when nil) so a
+		// dotted part can route through a *NestedMeta exactly like a value key
+		// would. Pointer-to-File stays a leaf target.
+		for fieldVal.Kind() == reflect.Pointer &&
+			fieldVal.Type().Elem() != reflect.TypeOf(File{}) {
+			if fieldVal.IsNil() {
+				fieldVal.Set(reflect.New(fieldVal.Type().Elem()))
+			}
+			fieldVal = fieldVal.Elem()
+		}
+
+		if len(rest) == 0 {
+			// Leaf: the part's final token names a File, []File, or *File field.
+			return d.consumeFileLeaf(fieldVal, headers, part)
+		}
+
+		head := rest[0]
+		rest = rest[1:]
+		if head.kind != "field" || fieldVal.Kind() != reflect.Struct || fieldVal.Type() == reflect.TypeOf(File{}) {
+			// Indexed/mapped file parts are not produced by the encoder (a
+			// []File slice is written under a single part name) and a continued
+			// path cannot route through a scalar; leave the part unconsumed so
+			// strict mode reports it instead of dropping it.
+			return false, nil
+		}
+
+		cur = fieldVal
+		token = head.name
+		depth++
+	}
+}
+
+// consumeFileLeaf writes the file part's headers into an already-resolved
+// File, []File, or *File field.
+func (d *Decoder) consumeFileLeaf(fieldVal reflect.Value, headers []*multipart.FileHeader, part string) (bool, error) {
+	switch fieldVal.Type() {
+	case reflect.TypeOf(File{}):
+		f, err := d.readFile(headers[0], part)
+		if err != nil {
+			return false, err
+		}
+		fieldVal.Set(reflect.ValueOf(f))
+		return true, nil
+	case reflect.TypeOf([]File{}):
+		out := make([]File, 0, len(headers))
+		for _, fh := range headers {
+			f, err := d.readFile(fh, part)
+			if err != nil {
+				return false, err
+			}
+			out = append(out, f)
+		}
+		fieldVal.Set(reflect.ValueOf(out))
+		return true, nil
+	default:
+		if fieldVal.Kind() == reflect.Pointer && fieldVal.Type().Elem() == reflect.TypeOf(File{}) {
+			f, err := d.readFile(headers[0], part)
+			if err != nil {
+				return false, err
+			}
+			if fieldVal.IsNil() {
+				fieldVal.Set(reflect.New(reflect.TypeOf(File{})))
+			}
+			fieldVal.Elem().Set(reflect.ValueOf(f))
+			return true, nil
+		}
+		return false, nil
+	}
+}
+
+// formKeys returns the submitted form keys as a slice (order irrelevant; the
+// set drives provided-field tracking).
+func formKeys(values url.Values) []string {
+	keys := make([]string, 0, len(values))
 	for k := range values {
-		base, _ := parseKeyPath(k)
-		keys[base] = true
+		keys = append(keys, k)
 	}
 	return keys
 }
 
-// multipartKeys collects the base keys submitted in a multipart form,
-// combining value fields and file fields.
-func multipartKeys(mf *multipart.Form) map[string]bool {
-	keys := make(map[string]bool, len(mf.Value)+len(mf.File))
-	for k := range mf.Value {
-		base, _ := parseKeyPath(k)
-		keys[base] = true
+// providedFields returns the set of canonical field paths — joined
+// reflect.StructField index chains — that the submitted keys decodes into.
+// It mirrors decodePath's routing so default/required logic shares one notion
+// of "provided" with the decoder itself: nested "ship_to.city" keys, promoted
+// embedded fields, indexed slice keys, and alternate tag names (json:"reg"
+// addressing a form:"region" field) all mark the destination field provided.
+// Keys the decoder rejects (ambiguous, unknown, out of range, too deep) mark
+// nothing, matching the fact that they decode to nothing.
+func (d *Decoder) providedFields(dst reflect.Value, keys []string, depth int) map[string]bool {
+	provided := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		base, rest := parseKeyPath(key)
+		if base == "" {
+			continue
+		}
+		tokens := make([]keyToken, 0, len(rest)+1)
+		tokens = append(tokens, keyToken{kind: "field", name: base})
+		tokens = append(tokens, rest...)
+		d.markProvidedPath(dst, tokens, nil, provided, depth)
 	}
-	for k := range mf.File {
-		base, _ := parseKeyPath(k)
-		keys[base] = true
+	return provided
+}
+
+// markProvidedPath routes a single parsed key through the destination struct,
+// recording the canonical index path of every field it resolves to. Each
+// level uses the same flattened per-type index as the value decoder.
+func (d *Decoder) markProvidedPath(cur reflect.Value, tokens []keyToken, indexPath []int, provided map[string]bool, depth int) {
+	if depth > d.cfg.maxDepth || len(tokens) == 0 {
+		return
 	}
-	return keys
+
+	if cur.Kind() == reflect.Pointer {
+		if cur.IsNil() {
+			return
+		}
+		cur = cur.Elem()
+	}
+
+	head := tokens[0]
+	tail := tokens[1:]
+
+	switch head.kind {
+	case "field":
+		if cur.Kind() != reflect.Struct || cur.Type() == reflect.TypeOf(File{}) {
+			return
+		}
+		index := d.resolver.buildUnmarshalIndex(cur.Type())
+		if index.ambiguous[head.name] {
+			return
+		}
+		sf, ok := index.fields[head.name]
+		if !ok {
+			return
+		}
+		fieldIndex := appendIndex(indexPath, sf.Index...)
+		provided[joinIndex(fieldIndex)] = true
+		if field, ok := fieldByIndexRO(cur, sf.Index); ok {
+			d.markProvidedPath(field, tail, fieldIndex, provided, depth+1)
+		}
+	case "index":
+		if cur.Kind() != reflect.Slice && cur.Kind() != reflect.Array {
+			return
+		}
+		n, err := strconv.Atoi(head.name)
+		if err != nil || n < 0 {
+			return
+		}
+		if n >= cur.Len() {
+			return
+		}
+		d.markProvidedPath(cur.Index(n), tail, indexPath, provided, depth+1)
+	default:
+		return
+	}
+}
+
+// appendIndex clones an index path with extra elements appended. Slices are
+// kept immutable so shared ancestors are never corrupted.
+func appendIndex(path []int, extra ...int) []int {
+	out := make([]int, 0, len(path)+len(extra))
+	out = append(out, path...)
+	out = append(out, extra...)
+	return out
+}
+
+// joinIndex renders an index path as a compact, unambiguous string key.
+func joinIndex(path []int) string {
+	if len(path) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, n := range path {
+		if i > 0 {
+			b.WriteByte('/')
+		}
+		b.WriteString(strconv.Itoa(n))
+	}
+	return b.String()
 }
 
 // applyDefaultsAndRequired walks the destination struct after unmarshalling,
 // setting default values for fields not provided and enforcing required fields.
-// A field is considered provided when a submitted key matches its resolved name
-// exactly or as a "name." / "name[" prefix (covering nested and indexed keys).
-func (d *Decoder) applyDefaultsAndRequired(dst reflect.Value, submitted map[string]bool, depth int) error {
+// A field counts as provided when any submitted key resolved to it (see
+// providedFields) — nested keys and alternate tag names included — so a field
+// delivered as "ship_to.city" is never reported missing, and its default is
+// never written over a provided value.
+func (d *Decoder) applyDefaultsAndRequired(dst reflect.Value, provided map[string]bool, indexPath []int, depth int) error {
 	if dst.Kind() == reflect.Pointer {
 		if dst.IsNil() {
 			return nil
@@ -575,12 +755,28 @@ func (d *Decoder) applyDefaultsAndRequired(dst reflect.Value, submitted map[stri
 	for i := range rt.NumField() {
 		sf := rt.Field(i)
 		fieldVal := dst.Field(i)
+		fieldIndex := appendIndex(indexPath, sf.Index...)
 
 		if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
 			if sf.Type == reflect.TypeOf(File{}) {
 				continue
 			}
-			if err := d.applyDefaultsAndRequired(fieldVal, submitted, depth+1); err != nil {
+			if err := d.applyDefaultsAndRequired(fieldVal, provided, fieldIndex, depth+1); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Anonymous pointer-to-struct embeds flatten like value embeds; a nil
+		// embedded pointer carries no fields to walk. Unexported embeds are
+		// excluded on every walk path (index, encoder) and are skipped here too.
+		if sf.Anonymous && sf.IsExported() && sf.Type.Kind() == reflect.Pointer &&
+			sf.Type.Elem().Kind() == reflect.Struct &&
+			sf.Type.Elem() != reflect.TypeOf(File{}) {
+			if fieldVal.IsNil() {
+				continue
+			}
+			if err := d.applyDefaultsAndRequired(fieldVal, provided, fieldIndex, depth+1); err != nil {
 				return err
 			}
 			continue
@@ -603,18 +799,18 @@ func (d *Decoder) applyDefaultsAndRequired(dst reflect.Value, submitted map[stri
 			fieldVal.Type().Elem().Kind() == reflect.Struct &&
 			fieldVal.Type().Elem() != reflect.TypeOf(File{}) &&
 			!fieldVal.IsNil():
-			if err := d.applyDefaultsAndRequired(fieldVal, submitted, depth+1); err != nil {
+			if err := d.applyDefaultsAndRequired(fieldVal, provided, fieldIndex, depth+1); err != nil {
 				return err
 			}
 		case fieldVal.Kind() == reflect.Struct &&
 			fieldVal.Type() != reflect.TypeOf(File{}) &&
 			fieldVal.Type() != reflect.TypeOf(time.Time{}):
-			if err := d.applyDefaultsAndRequired(fieldVal, submitted, depth+1); err != nil {
+			if err := d.applyDefaultsAndRequired(fieldVal, provided, fieldIndex, depth+1); err != nil {
 				return err
 			}
 		}
 
-		if keyProvided(submitted, name) {
+		if provided[joinIndex(fieldIndex)] {
 			continue
 		}
 
@@ -643,23 +839,4 @@ func isDefaultable(t reflect.Type) bool {
 	default:
 		return false
 	}
-}
-
-// keyProvided reports whether the submitted key set covers the given field name,
-// either directly or as the prefix of a nested/indexed key.
-func keyProvided(submitted map[string]bool, name string) bool {
-	if submitted[name] {
-		return true
-	}
-	dot := name + "."
-	bracket := name + "["
-	for k := range submitted {
-		if len(k) >= len(dot) && k[:len(dot)] == dot {
-			return true
-		}
-		if len(k) >= len(bracket) && k[:len(bracket)] == bracket {
-			return true
-		}
-	}
-	return false
 }

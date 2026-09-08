@@ -190,13 +190,21 @@ func parseScalar(s string, field reflect.Value) error {
 		}
 		field.SetUint(v)
 	case reflect.Float32, reflect.Float64:
-		v, err := strconv.ParseFloat(s, 64)
+		bits := 64
+		if field.Kind() == reflect.Float32 {
+			bits = 32
+		}
+		v, err := strconv.ParseFloat(s, bits)
 		if err != nil {
 			return fmt.Errorf("parsing float %q: %w", s, err)
 		}
 		field.SetFloat(v)
 	case reflect.Complex64, reflect.Complex128:
-		v, err := strconv.ParseComplex(s, 128)
+		bits := 128
+		if field.Kind() == reflect.Complex64 {
+			bits = 64
+		}
+		v, err := strconv.ParseComplex(s, bits)
 		if err != nil {
 			return fmt.Errorf("parsing complex %q: %w", s, err)
 		}
