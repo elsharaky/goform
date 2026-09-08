@@ -374,6 +374,74 @@ func TestDecoder_Unmarshal_Strict_Ignored(t *testing.T) {
 	}
 }
 
+// Regression: non-strict mode ignored unknown TOP-LEVEL keys while still
+// rejecting unknown paths below a known field ("addr.zip") and structural
+// mismatches ("age[0]" on an int, "age.name"). Nested unknowns must be as
+// lenient as top-level ones; WithStrictUnmarshal keeps rejecting them.
+func TestDecoder_Unmarshal_NonStrictNestedLenient(t *testing.T) {
+	type addr struct {
+		City string `form:"city"`
+	}
+	type s struct {
+		Addr addr           `form:"addr"`
+		Age  int            `form:"age"`
+		Tags []string       `form:"tags"`
+		Attr map[string]int `form:"attr"`
+	}
+
+	dec := NewDecoder()
+	for _, vals := range []url.Values{
+		{"addr.zip": {"x"}},
+		{"addr.city.zip": {"x"}},
+		{"age[0]": {"x"}},
+		{"age.name": {"x"}},
+		{"attr.status": {"x"}},
+	} {
+		var out s
+		if err := dec.Unmarshal(vals, &out); err != nil {
+			t.Errorf("%v: nested unknown should be ignored in non-strict mode, got %v", vals, err)
+		}
+	}
+
+	// Known nested paths still decode normally beside the ignored noise.
+	var out s
+	if err := dec.Unmarshal(url.Values{"addr.city": {"lyon"}, "tags[0]": {"a"}, "attr[port]": {"8080"}, "addr.zip": {"x"}}, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Addr.City != "lyon" || out.Tags[0] != "a" || out.Attr["port"] != 8080 {
+		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestDecoder_Unmarshal_StrictNestedRejectsUnknownPath(t *testing.T) {
+	type addr struct {
+		City string `form:"city"`
+	}
+	type s struct {
+		Addr addr `form:"addr"`
+		Age  int  `form:"age"`
+	}
+
+	for _, key := range []string{"addr.zip", "addr.city.zip", "age[0]", "age.name"} {
+		var out s
+		err := NewDecoder(WithStrictUnmarshal(true)).Unmarshal(url.Values{key: {"x"}}, &out)
+		var de *DecodingError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: expected DecodingError in strict mode, got %v", key, err)
+			continue
+		}
+		if de.Err == nil {
+			t.Errorf("%s: DecodingError has nil cause", key)
+		}
+	}
+
+	// A real nested path must still pass strict mode.
+	var out s
+	if err := NewDecoder(WithStrictUnmarshal(true)).Unmarshal(url.Values{"addr.city": {"lyon"}}, &out); err != nil {
+		t.Fatalf("strict unmarshal of valid key: %v", err)
+	}
+}
+
 func TestDecoder_Unmarshal_NonPointer(t *testing.T) {
 	dec := NewDecoder()
 	vals := url.Values{}
@@ -508,6 +576,117 @@ func TestDecoder_Unmarshal_EmbeddedPromotedFieldMultipart(t *testing.T) {
 	}
 	if r.Token != "mp-secret" {
 		t.Errorf("Token = %q, want %q", r.Token, "mp-secret")
+	}
+}
+
+// Regressions: pointer-embedded structs (*Inner) flatten into the parent
+// namespace just like value embeds, mirroring encoding/json. The encoder emits
+// the promoted field name, decoding a promoted key allocates the nil embedded
+// pointer, the explicit "Inner.sub" key stays valid for older payloads, and
+// required applies to a non-nil embed's promoted fields.
+type PtrEmbedInner struct {
+	Name string `form:"name"`
+}
+
+type ptrEmbedReq struct {
+	*PtrEmbedInner
+	Tag string `form:"tag"`
+}
+
+func TestEncoder_Marshal_PointerEmbeddedStructFlattened(t *testing.T) {
+	vals, err := NewEncoder().Marshal(ptrEmbedReq{PtrEmbedInner: &PtrEmbedInner{Name: "n"}, Tag: "t"})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if vals.Get("name") != "n" {
+		t.Errorf("name = %q, want flattened promoted key", vals.Get("name"))
+	}
+	if vals.Get("tag") != "t" {
+		t.Errorf("tag = %q", vals.Get("tag"))
+	}
+	if vals.Has("PtrEmbedInner.name") {
+		t.Errorf("unexpected dotted ptr-embed key: %v", vals)
+	}
+
+	// A nil embedded pointer contributes nothing (and does not error).
+	vals, err = NewEncoder().Marshal(ptrEmbedReq{Tag: "t"})
+	if err != nil {
+		t.Fatalf("marshal nil-embed error: %v", err)
+	}
+	if vals.Has("name") || vals.Get("tag") != "t" {
+		t.Errorf("nil-embed output = %v", vals)
+	}
+}
+
+func TestDecoder_Unmarshal_PointerEmbeddedPromotedField(t *testing.T) {
+	var r ptrEmbedReq
+	if err := NewDecoder().Unmarshal(url.Values{"name": {"n"}}, &r); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if r.PtrEmbedInner == nil {
+		t.Fatal("embedded pointer not allocated")
+	}
+	if r.Name != "n" {
+		t.Errorf("Name = %q, want n", r.Name)
+	}
+	if r.Tag != "" {
+		t.Errorf("Tag = %q, want empty", r.Tag)
+	}
+}
+
+func TestDecoder_Unmarshal_PointerEmbeddedLegacyDottedKey(t *testing.T) {
+	var r ptrEmbedReq
+	if err := NewDecoder().Unmarshal(url.Values{"PtrEmbedInner.name": {"n"}}, &r); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if r.PtrEmbedInner == nil || r.Name != "n" {
+		t.Errorf("embedded pointer = %+v, want non-nil with Name=n", r.PtrEmbedInner)
+	}
+
+	// Strict mode accepts the legacy key too (it maps to a real field).
+	var strict ptrEmbedReq
+	if err := NewDecoder(WithStrictUnmarshal(true)).Unmarshal(url.Values{"PtrEmbedInner.name": {"n"}}, &strict); err != nil {
+		t.Fatalf("strict unmarshal of legacy key: %v", err)
+	}
+}
+
+func TestDecoder_Unmarshal_PointerEmbeddedPromotedFieldRequired(t *testing.T) {
+	type ReqInner struct {
+		Name string `form:"name,required"`
+	}
+	type req struct {
+		*ReqInner
+		Tag string `form:"tag"`
+	}
+	var r req
+	r.ReqInner = &ReqInner{}
+	if err := NewDecoder().Unmarshal(url.Values{"tag": {"t"}}, &r); err == nil {
+		t.Error("expected missing-required error for promoted field of pointer embed")
+	}
+}
+
+func TestMarshalUnmarshal_RoundTrip_PointerEmbeddedStruct(t *testing.T) {
+	var req struct {
+		*PtrEmbedInner
+		Tag string `form:"tag"`
+	}
+	req.PtrEmbedInner = &PtrEmbedInner{Name: "round"}
+	req.Tag = "t"
+
+	vals, err := NewEncoder().Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got struct {
+		*PtrEmbedInner
+		Tag string `form:"tag"`
+	}
+	if err := NewDecoder().Unmarshal(vals, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Name != "round" || got.Tag != "t" {
+		t.Errorf("round trip = %+v", got)
 	}
 }
 
@@ -708,6 +887,40 @@ func TestDecoder_Unmarshal_ScalarErrorWrapped(t *testing.T) {
 		if de.Err == nil {
 			t.Errorf("%s: DecodingError has nil cause", key)
 		}
+	}
+}
+
+// Regression: float32 and complex64 previously parsed with 64-bit precision
+// and silently accepted out-of-range payloads as +Inf. They now parse with the
+// field's own bit size, so overflow is a decode error instead of +Inf data.
+func TestDecoder_Unmarshal_FloatOverflowRejected(t *testing.T) {
+	type s struct {
+		F32 float32   `form:"f32"`
+		C64 complex64 `form:"c64"`
+	}
+
+	dec := NewDecoder()
+	for _, key := range []string{"f32", "c64"} {
+		var out s
+		raw := "1e300"
+		if key == "c64" {
+			raw = "1e300+0i"
+		}
+		err := dec.Unmarshal(url.Values{key: {raw}}, &out)
+		var de *DecodingError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: expected DecodingError for out-of-range value, got %v", key, err)
+			continue
+		}
+	}
+
+	// In-range values still land at full float32/complex64 precision.
+	var ok s
+	if err := dec.Unmarshal(url.Values{"f32": {"3.25"}, "c64": {"1.5+2i"}}, &ok); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ok.F32 != 3.25 || ok.C64 != complex(float32(1.5), float32(2)) {
+		t.Errorf("got %+v", ok)
 	}
 }
 
