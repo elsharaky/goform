@@ -121,6 +121,22 @@ func (e *Encoder) encodeStruct(rv reflect.Value, prefix string, vals url.Values,
 			continue
 		}
 
+		// Anonymous pointer-to-struct embeds flatten like value embeds; a nil
+		// embedded pointer contributes nothing. Unexported embeds and *File are
+		// excluded to stay in sync with the unmarshal index.
+		if sf.Anonymous && sf.IsExported() && sf.Type.Kind() == reflect.Pointer &&
+			sf.Type.Elem().Kind() == reflect.Struct &&
+			sf.Type.Elem() != reflect.TypeOf(File{}) {
+			fieldVal := rv.Field(i)
+			if fieldVal.IsNil() {
+				continue
+			}
+			if err := e.encodeStruct(fieldVal.Elem(), prefix, vals, depth+1); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if !sf.IsExported() {
 			continue
 		}
@@ -285,6 +301,22 @@ func (e *Encoder) encodeStructMultipart(rv reflect.Value, prefix string, mw *mul
 			continue
 		}
 
+		// Anonymous pointer-to-struct embeds flatten like value embeds; a nil
+		// embedded pointer contributes nothing. Unexported embeds and *File are
+		// excluded to stay in sync with the unmarshal index.
+		if sf.Anonymous && sf.IsExported() && sf.Type.Kind() == reflect.Pointer &&
+			sf.Type.Elem().Kind() == reflect.Struct &&
+			sf.Type.Elem() != reflect.TypeOf(File{}) {
+			fieldVal := rv.Field(i)
+			if fieldVal.IsNil() {
+				continue
+			}
+			if err := e.encodeStructMultipart(fieldVal.Elem(), prefix, mw, depth+1); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if !sf.IsExported() {
 			continue
 		}
@@ -341,11 +373,16 @@ func (e *Encoder) encodeFieldMultipart(rv reflect.Value, key string, mw *multipa
 
 	t := rv.Type()
 
-	// Files written as multipart parts.
+	// Files written as multipart parts. A File without a filename (e.g. the
+	// zero value) is skipped: emitting a filename="" part produces a body the
+	// library itself refuses to decode.
 	if t == reflect.TypeOf(File{}) {
 		f, ok := rv.Interface().(File)
 		if !ok {
 			return &EncodingError{FieldPath: key, Err: errors.New("expected File")}
+		}
+		if f.Filename == "" {
+			return nil
 		}
 		return writeFilePart(mw, key, f)
 	}
@@ -355,6 +392,9 @@ func (e *Encoder) encodeFieldMultipart(rv reflect.Value, key string, mw *multipa
 			return &EncodingError{FieldPath: key, Err: errors.New("expected []File")}
 		}
 		for _, f := range fs {
+			if f.Filename == "" {
+				continue
+			}
 			if err := writeFilePart(mw, key, f); err != nil {
 				return err
 			}

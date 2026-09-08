@@ -69,6 +69,57 @@ func TestCustomConverter(t *testing.T) {
 	}
 }
 
+// bothType both implements encoding.TextMarshaler/TextUnmarshaler and has a
+// registered converter. A registered converter must win at every container
+// depth (leaf, slice element, map value/key) on both encode and decode —
+// previously slice elements routed through assignScalarTo, which checked
+// TextUnmarshaler first and flipped the precedence with container depth.
+type bothType string
+
+func (b *bothType) MarshalText() ([]byte, error) { return []byte("txt"), nil }
+func (b *bothType) UnmarshalText(t []byte) error { *b = bothType("txt"); return nil }
+
+type bothConv struct{}
+
+func (bothConv) Marshal(v reflect.Value) (string, error)   { return "conv", nil }
+func (bothConv) Unmarshal(s string, f reflect.Value) error { f.SetString("conv"); return nil }
+
+func TestConverterTakesPrecedenceAtEveryDepth(t *testing.T) {
+	type s struct {
+		F  bothType            `form:"f"`
+		Fs []bothType          `form:"fs"`
+		M  map[string]bothType `form:"m"`
+	}
+	conv := bothConv{}
+	typ := reflect.TypeOf(bothType(""))
+
+	enc := NewEncoder(WithTextMarshalerSupport(true), WithCustomConverter(typ, conv))
+	vals, err := enc.Marshal(s{F: "x", Fs: []bothType{"x"}, M: map[string]bothType{"k": "x"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"f", "fs[0]", "m[k]"} {
+		if got := vals.Get(key); got != "conv" {
+			t.Errorf("encode %s = %q, want converter output \"conv\"", key, got)
+		}
+	}
+
+	dec := NewDecoder(WithTextMarshalerSupport(true), WithCustomConverter(typ, conv))
+	var out s
+	if err := dec.Unmarshal(url.Values{"f": {"x"}, "fs": {"x"}, "m[k]": {"x"}}, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.F != "conv" {
+		t.Errorf("decode leaf = %q, want converter output", out.F)
+	}
+	if out.Fs[0] != "conv" {
+		t.Errorf("decode slice element = %q, want converter output (precedence flipped previously)", out.Fs[0])
+	}
+	if out.M["k"] != "conv" {
+		t.Errorf("decode map value = %q, want converter output", out.M["k"])
+	}
+}
+
 func TestDurationConverter(t *testing.T) {
 	// time.Duration implements fmt.Stringer but not TextMarshaler; test via parse
 	enc := NewEncoder()

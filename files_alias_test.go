@@ -334,3 +334,236 @@ func TestUnmarshal_AmbiguousFilePartEmbedded(t *testing.T) {
 		t.Errorf("fields consumed despite ambiguous part: %+v", v)
 	}
 }
+
+// Bug 1 regressions: File fields inside NAMED nested structs must round-trip.
+// The encoder emits dotted part names ("meta.avatar"); the decoder routes file
+// parts through nested structs exactly like value keys, so the file is neither
+// silently dropped nor rejected as unknown under strict mode.
+type nestedAvatar struct {
+	Avatar File   `form:"avatar"`
+	Docs   []File `form:"docs"`
+	Extra  *File  `form:"extra"`
+}
+
+type nestedUploadReq struct {
+	Name string       `form:"name"`
+	Meta nestedAvatar `form:"meta"`
+}
+
+type nestedUploadPtrReq struct {
+	Name string        `form:"name"`
+	Meta *nestedAvatar `form:"meta"`
+}
+
+func TestMarshalUnmarshal_RoundTrip_NestedFile(t *testing.T) {
+	req := nestedUploadReq{
+		Name: "n",
+		Meta: nestedAvatar{
+			Avatar: File{Content: []byte("a1"), Filename: "a.png"},
+			Docs: []File{
+				{Content: []byte("d1"), Filename: "d1.txt"},
+				{Content: []byte("d2"), Filename: "d2.txt"},
+			},
+			Extra: &File{Content: []byte("e1"), Filename: "e.bin"},
+		},
+	}
+
+	body, ct, err := Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got nestedUploadReq
+	if err := Unmarshal(body, ct, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Meta.Avatar.Filename != "a.png" || string(got.Meta.Avatar.Content) != "a1" {
+		t.Errorf("Avatar = %+v, want a.png/a1", got.Meta.Avatar)
+	}
+	if len(got.Meta.Docs) != 2 || got.Meta.Docs[1].Filename != "d2.txt" {
+		t.Errorf("Docs = %+v, want 2 files ending d2.txt", got.Meta.Docs)
+	}
+	if got.Meta.Extra == nil || string(got.Meta.Extra.Content) != "e1" {
+		t.Errorf("Extra = %+v, want content e1", got.Meta.Extra)
+	}
+
+	// Strict mode must accept the encoder's own output.
+	var strict nestedUploadReq
+	if err := Unmarshal(body, ct, &strict, WithStrictUnmarshal(true)); err != nil {
+		t.Fatalf("strict Unmarshal: %v", err)
+	}
+	if strict.Meta.Avatar.Filename != "a.png" {
+		t.Errorf("strict Avatar = %+v, want a.png", strict.Meta.Avatar)
+	}
+}
+
+func TestMarshalUnmarshal_RoundTrip_NestedFilePointer(t *testing.T) {
+	req := nestedUploadPtrReq{
+		Name: "n",
+		Meta: &nestedAvatar{Avatar: File{Content: []byte("x"), Filename: "a.png"}},
+	}
+
+	body, ct, err := Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got nestedUploadPtrReq
+	if err := Unmarshal(body, ct, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Meta == nil || got.Meta.Avatar.Filename != "a.png" {
+		t.Errorf("Meta = %+v, want non-nil with avatar a.png", got.Meta)
+	}
+
+	var strict nestedUploadPtrReq
+	if err := Unmarshal(body, ct, &strict, WithStrictUnmarshal(true)); err != nil {
+		t.Fatalf("strict Unmarshal: %v", err)
+	}
+	if strict.Meta == nil || string(strict.Meta.Avatar.Content) != "x" {
+		t.Errorf("strict Meta = %+v, want non-nil avatar", strict.Meta)
+	}
+}
+
+// A nested required field stays satisfied when the value arrives alongside a
+// file part (the multipart provided-key set must include both value and file
+// keys at their full nesting).
+func TestRequiredNestedProvidedWithFilePart(t *testing.T) {
+	type req struct {
+		ShipTo struct {
+			City string `form:"city,required"`
+		} `form:"ship_to"`
+		Avatar File `form:"avatar"`
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("ship_to.city", "Lyon"); err != nil {
+		t.Fatalf("write value: %v", err)
+	}
+	fw, err := mw.CreateFormFile("avatar", "a.txt")
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if _, err := fw.Write([]byte("x")); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	var v req
+	if err := Unmarshal(buf.Bytes(), mw.FormDataContentType(), &v); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if v.ShipTo.City != "Lyon" {
+		t.Errorf("City = %q, want Lyon", v.ShipTo.City)
+	}
+	if v.Avatar.Filename != "a.txt" {
+		t.Errorf("Avatar = %+v, want a.txt", v.Avatar)
+	}
+}
+
+// Regressions (Issue 9): a File with an empty Filename (e.g. the zero value)
+// produces a filename="" multipart part that the library itself refuses to
+// decode. The encoder now skips such parts, so the body round-trips cleanly.
+func TestMarshal_SkipsFileWithoutFilename(t *testing.T) {
+	type s struct {
+		Avatar File   `form:"avatar"`
+		Docs   []File `form:"docs"`
+	}
+	v := s{
+		Avatar: File{Content: []byte("keep"), Filename: "a.png"},
+		Docs: []File{
+			{Content: []byte("dropped")}, // no filename: skipped
+			{Content: []byte("kept"), Filename: "b.txt"},
+		},
+	}
+	body, ct, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", ct)
+	if err := req.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := len(req.MultipartForm.File["avatar"]); got != 1 {
+		t.Errorf("avatar parts = %d, want 1", got)
+	}
+	if got := len(req.MultipartForm.File["docs"]); got != 1 {
+		t.Fatalf("docs parts = %d, want 1 (empty-filename part skipped)", got)
+	}
+	if req.MultipartForm.File["docs"][0].Filename != "b.txt" {
+		t.Errorf("docs part = %q, want b.txt", req.MultipartForm.File["docs"][0].Filename)
+	}
+}
+
+func TestMarshal_ZeroFileBodyDecodable(t *testing.T) {
+	type s struct {
+		Avatar File `form:"avatar"`
+	}
+	body, ct, err := Marshal(s{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out s
+	if err := Unmarshal(body, ct, &out); err != nil {
+		t.Fatalf("zero-value File body must round-trip: %v", err)
+	}
+}
+
+// Regression (Bug 5): File fields promoted by a pointer-embedded struct are
+// written as flattened part names ("avatar") and must route back to the outer
+// File field on decode, matching value-embed behavior.
+type PtrFileMeta struct {
+	Avatar File `form:"avatar"`
+}
+
+type ptrFileReq struct {
+	*PtrFileMeta
+	Name string `form:"name"`
+}
+
+func TestMarshalUnmarshal_RoundTrip_PointerEmbeddedFile(t *testing.T) {
+	req := ptrFileReq{
+		PtrFileMeta: &PtrFileMeta{Avatar: File{Content: []byte("ff"), Filename: "f.bin"}},
+		Name:        "n",
+	}
+	body, ct, err := Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	mpReq := httptest.NewRequest("POST", "/", bytes.NewReader(body))
+	mpReq.Header.Set("Content-Type", ct)
+	if err := mpReq.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, ok := mpReq.MultipartForm.File["avatar"]; !ok {
+		t.Fatalf("expected flattened part name \"avatar\", got parts %v", mpReq.MultipartForm.File)
+	}
+	if _, ok := mpReq.MultipartForm.File["PtrFileMeta.avatar"]; ok {
+		t.Errorf("unexpected dotted part name present")
+	}
+
+	var got ptrFileReq
+	if err := Unmarshal(body, ct, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.PtrFileMeta == nil || got.Avatar.Filename != "f.bin" {
+		t.Errorf("got = %+v, want non-nil embed with avatar f.bin", got)
+	}
+	if got.Name != "n" {
+		t.Errorf("Name = %q, want n", got.Name)
+	}
+
+	// Strict mode must accept the encoder's own output.
+	var strict ptrFileReq
+	if err := Unmarshal(body, ct, &strict, WithStrictUnmarshal(true)); err != nil {
+		t.Fatalf("strict unmarshal: %v", err)
+	}
+	if strict.Avatar.Filename != "f.bin" {
+		t.Errorf("strict avatar = %+v, want f.bin", strict.Avatar)
+	}
+}

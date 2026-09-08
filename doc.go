@@ -53,8 +53,12 @@
 //	    Token  string `form:"token,required"`
 //	}
 //
-// required and default are enforced during unmarshalling against the field's
-// resolved form name.
+// required and default are enforced during unmarshalling. A field counts as
+// provided whenever any submitted key resolves to it — nested keys
+// ("ship_to.city"), promoted embedded fields, indexed keys, and alternate tag
+// names (json:"reg" addressing a form:"region" field) all count, so a field
+// delivered through a nested or aliased key is never reported missing and its
+// default is never written over the provided value.
 //
 // # File Uploads
 //
@@ -65,12 +69,19 @@
 //	    Docs   anyform.Files  `form:"documents"`
 //	}
 //
+// File parts are routed through the struct exactly like value keys: a part
+// named "meta.avatar" descends from the Meta field to its inner Avatar field,
+// so File fields nested inside named structs round-trip instead of being
+// dropped (and are accepted by WithStrictUnmarshal).
+//
 // The [File] type holds the raw content, detected content type, and original
 // filename, decoupled from net/http so it works in any context. Note that file
 // parts should carry a filename for reliable multipart detection. A file part
 // that is present but carries zero bytes is still bound: the resulting [File]
 // has empty Content but preserves its Filename. A part with an empty filename
-// is classified as a value field by the multipart parser.
+// is classified as a value field by the multipart parser. The encoder mirrors
+// this: a [File] with an empty filename (e.g. the zero value) is skipped when
+// emitting multipart parts, so a body it produces always round-trips.
 //
 // # Supported types
 //
@@ -79,15 +90,23 @@
 // primitives are supported only as field values, since every form key names a
 // field — a bare root slice would have no namespace to attach its keys to.
 //
-//   - Scalars: string, bool, all int/uint/float/complex widths (via strconv)
+//   - Scalars: string, bool, all int/uint/float/complex widths (via strconv).
+//     Values are parsed with the field's own bit size, so out-of-range numbers
+//     fail with a DecodingError instead of silently becoming an infinity.
 //   - Named types: type MyInt int, type Status string, etc. (via reflection)
 //   - Pointers: *T (nil is omitted on marshal; allocated on unmarshal)
 //   - Slices and arrays: []T, [N]T — encoded as repeated indexed keys
 //   - Maps: map[K]V — encoded as bracket-named keys
-//   - Structs: nested and embedded (anonymous) structs are flattened
+//   - Structs: nested and embedded (anonymous) structs are flattened,
+//     including pointer-embedded structs (*Inner) whose exported promoted
+//     fields flatten into the parent namespace exactly like value embeds.
+//     A nil embedded pointer contributes nothing on marshal and is allocated
+//     when a promoted key decodes into it.
 //   - time.Time (RFC3339 by default, configurable via WithTimeLayout)
 //   - time.Duration and net.IP / url.URL (built-in converters)
-//   - Types implementing encoding.TextMarshaler / TextUnmarshaler
+//   - Types implementing encoding.TextMarshaler / TextUnmarshaler. A
+//     registered custom converter always takes precedence over these, at
+//     every container depth on both encode and decode.
 //   - File and []File across multipart round-trips
 //
 // # Key format
@@ -113,7 +132,11 @@
 //   - ,required produces ErrMissingRequired when the field is absent.
 //   - ,default:v populates an absent field with v (scalar kinds only).
 //   - ,strict (WithStrictUnmarshal) reports unknown keys as errors. This covers
-//     both value fields and multipart file parts.
+//     value fields and multipart file parts at every nesting level: in the
+//     default (non-strict) mode a key that references an unknown field
+//     anywhere in its path ("addr.zip", "age[0]" on an int) is silently
+//     ignored, just like an unknown top-level key, while strict mode rejects
+//     it.
 //   - Ambiguous keys are rejected: when two different fields resolve to the
 //     same key (an embedded promoted field and an outer field sharing a tag,
 //     or two sibling fields sharing a tag), unmarshal returns a DecodingError
