@@ -174,7 +174,9 @@ resulting `File` has an empty `Content` but preserves its `Filename`. That is
 intentional — an empty upload is treated as a provided (empty) file, not as an
 absent one. A part with an *empty* filename, by contrast, is classified by the
 multipart parser as a value field (see the [hardening](#server-hardening)
-notes).
+notes). The encoder mirrors this: a `File` with an empty filename (e.g. the
+zero value) is **skipped** when emitting multipart parts, so a body it produces
+always round-trips.
 
 ## Supported types
 
@@ -187,17 +189,17 @@ notes).
 
 | Category | Types | Notes |
 |----------|-------|-------|
-| Primitives | `string`, `bool`, `int*`, `uint*`, `float*`, `complex*` | parsed via `strconv` |
+| Primitives | `string`, `bool`, `int*`, `uint*`, `float*`, `complex*` | parsed via `strconv` at the field's own bit size (`float32`/`complex64` included) — out-of-range values error instead of becoming `+Inf` |
 | Named types | `type MyInt int`, `type Status string` | via reflection |
 | Pointers | `*T` | nil → omitted; empty → nil |
 | Slices/Arrays | `[]T`, `[N]T` | indexes: `field[0]` |
 | Maps | `map[K]V` | keys: `field[key]` |
 | Nested structs | dot notation | e.g. `address.city` |
-| Embedded structs | flattened | promoted fields |
+| Embedded structs | flattened | promoted fields (value and pointer embeds, `*Inner` included) |
 | `time.Time` | RFC3339 default | configurable layout |
 | `time.Duration` | `"1h30m"` | |
 | `net.IP`, `url.URL` | string form | |
-| `TextMarshaler` / `TextUnmarshaler` | automatic | |
+| `TextMarshaler` / `TextUnmarshaler` | automatic | a registered `WithCustomConverter` always wins, at every container depth, on encode and decode |
 | `File` / `[]File` | multipart | |
 | Custom types | `WithCustomConverter` | |
 | `any` / `interface{}` | encode only | see note below |
@@ -261,12 +263,23 @@ anyform.Unmarshal(body, ct, &got) // reconstructs all nested fields
 
 ### Unmarshaller semantics
 
-- `,required` returns `ErrMissingRequired` when the field is absent.
-- `,default:v` populates an absent scalar field with `v`.
+- `,required` returns `ErrMissingRequired` when the field is absent. A field
+  counts as provided whenever any submitted key resolves to it — nested keys
+  (`ship_to.city`), promoted embedded fields, indexed keys, and alternate tag
+  names (`json:"reg"` addressing a `form:"region"` field) all count.
+- `,default:v` populates an absent scalar field with `v`; a provided value is
+  never overwritten by the default (nested and aliased keys included).
 - `WithStrictUnmarshal(true)` reports unknown keys as errors — including
-  unknown multipart file parts, not just value keys.
+  unknown multipart file parts, not just value keys. This applies at **every
+  nesting level**: in the default (non-strict) mode a key referencing an
+  unknown field anywhere in its path (`addr.zip`, `age[0]` on an int) is
+  ignored just like an unknown top-level key, while strict mode rejects it.
 - Any tag name in the priority list is accepted as the submitted key, for
   value fields **and** `File`/`[]File` fields.
+- File parts are routed through the struct exactly like value keys: a part
+  named `meta.avatar` descends from the `Meta` field to its inner `Avatar`
+  field, so `File` fields nested inside named structs round-trip instead of
+  being dropped (and are accepted by strict mode).
 - Nil pointers are allocated; absent fields keep their zero value.
 - **Ambiguous keys are errors.** If two different fields resolve to the same
   key (an embedded promoted field and an outer field sharing a tag, or two
