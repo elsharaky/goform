@@ -355,8 +355,13 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 		}
 
 		// Map value is complex (struct/slice); descending requires a settable
-		// value. Create it, decode, then set.
+		// value. Start from an existing entry so distinct keys targeting the
+		// same element ("m[k].name", "m[k].age", or a file part "m[k].bin")
+		// merge instead of overwriting one another, then write the result back.
 		val := reflect.New(field.Type().Elem()).Elem()
+		if existing := field.MapIndex(mapKey); existing.IsValid() {
+			val.Set(existing)
+		}
 		if err := d.decodePath(val, tail, vals, depth+1, path); err != nil {
 			return &DecodingError{FieldPath: head.name, Err: err}
 		}
@@ -524,65 +529,144 @@ func (d *Decoder) unmarshalFiles(mf *multipart.Form, dst reflect.Value) error {
 
 // consumeFilePart routes a single submitted file part into the File field it
 // addresses. It returns whether the part was consumed (matched a File field).
-// base is the next key token to resolve within dst; rest holds any remaining
-// dotted/indexed tokens. Each level uses the flattened per-type index, so a
-// part "meta.avatar" resolves meta at the root and avatar inside the Meta
-// struct. Ambiguous bases — two sibling File fields sharing a tag, or an
-// embedded promoted File plus an outer File sharing a tag — are rejected so
-// the part is not consumed by every matching field.
+// base is the first key token to resolve within dst; rest holds any remaining
+// dotted/indexed tokens. Each level resolves names through the flattened
+// per-type index, so a part "meta.avatar" resolves meta at the root and avatar
+// inside the Meta struct. Indexed and mapped tokens are followed exactly like
+// value keys, so file parts inside slices-of-structs ("docs[0].bin") and maps
+// ("m[k]") round-trip instead of being dropped. Ambiguous bases — two sibling
+// File fields sharing a tag, or an embedded promoted File plus an outer File
+// sharing a tag — are rejected so the part is not consumed by every matching
+// field.
 func (d *Decoder) consumeFilePart(dst reflect.Value, base string, rest []keyToken, headers []*multipart.FileHeader, part string, depth int) (bool, error) {
-	cur := dst
-	token := base
+	tokens := make([]keyToken, 0, len(rest)+1)
+	tokens = append(tokens, keyToken{kind: "field", name: base})
+	tokens = append(tokens, rest...)
+	return d.consumeFilePartTokens(dst, tokens, headers, part, depth)
+}
 
-	for {
-		if depth > d.cfg.maxDepth {
-			return false, &DecodingError{Key: part, Err: ErrMaxDepthExceeded}
+// consumeFilePartTokens walks one file part through the destination value,
+// consuming index and mapkey tokens the same way decodePath does for value
+// keys (growing slices, allocating map entries). The final token must resolve
+// to a File, []File, or *File; anything else leaves the part unconsumed —
+// dropped by default, rejected as an unknown field in strict mode.
+func (d *Decoder) consumeFilePartTokens(cur reflect.Value, tokens []keyToken, headers []*multipart.FileHeader, part string, depth int) (bool, error) {
+	if depth > d.cfg.maxDepth {
+		return false, &DecodingError{Key: part, Err: ErrMaxDepthExceeded}
+	}
+
+	// Pointer-to-struct values are dereferenced (allocating when nil) so a
+	// part can route through a *NestedMeta exactly like a value key would.
+	// Pointer-to-File stays a leaf target.
+	for cur.Kind() == reflect.Pointer && cur.Type().Elem() != reflect.TypeOf(File{}) {
+		if cur.IsNil() {
+			if !cur.CanSet() {
+				return false, nil
+			}
+			cur.Set(reflect.New(cur.Type().Elem()))
 		}
+		cur = cur.Elem()
+	}
 
+	head := tokens[0]
+	tail := tokens[1:]
+
+	switch head.kind {
+	case "field":
+		if cur.Kind() != reflect.Struct || cur.Type() == reflect.TypeOf(File{}) {
+			return false, nil
+		}
 		index := d.resolver.buildUnmarshalIndex(cur.Type())
-		if index.ambiguous[token] {
+		if index.ambiguous[head.name] {
 			return false, &DecodingError{Key: part,
-				Err: fmt.Errorf("ambiguous field %q matches more than one field", token)}
+				Err: fmt.Errorf("ambiguous field %q matches more than one field", head.name)}
 		}
-		sf, ok := index.fields[token]
+		sf, ok := index.fields[head.name]
 		if !ok {
 			return false, nil
 		}
-
 		fieldVal := fieldByIndexAlloc(cur, sf.Index)
 		if !fieldVal.CanSet() {
 			return false, nil
 		}
-
-		// Pointer-to-struct fields are dereferenced (allocating when nil) so a
-		// dotted part can route through a *NestedMeta exactly like a value key
-		// would. Pointer-to-File stays a leaf target.
-		for fieldVal.Kind() == reflect.Pointer &&
-			fieldVal.Type().Elem() != reflect.TypeOf(File{}) {
-			if fieldVal.IsNil() {
-				fieldVal.Set(reflect.New(fieldVal.Type().Elem()))
-			}
-			fieldVal = fieldVal.Elem()
-		}
-
-		if len(rest) == 0 {
+		if len(tail) == 0 {
 			// Leaf: the part's final token names a File, []File, or *File field.
 			return d.consumeFileLeaf(fieldVal, headers, part)
 		}
+		return d.consumeFilePartTokens(fieldVal, tail, headers, part, depth+1)
 
-		head := rest[0]
-		rest = rest[1:]
-		if head.kind != "field" || fieldVal.Kind() != reflect.Struct || fieldVal.Type() == reflect.TypeOf(File{}) {
-			// Indexed/mapped file parts are not produced by the encoder (a
-			// []File slice is written under a single part name) and a continued
-			// path cannot route through a scalar; leave the part unconsumed so
-			// strict mode reports it instead of dropping it.
+	case "index":
+		if cur.Kind() != reflect.Slice && cur.Kind() != reflect.Array {
 			return false, nil
 		}
+		idx, err := strconv.Atoi(head.name)
+		if err != nil {
+			return false, &DecodingError{Key: part, Err: fmt.Errorf("invalid index %q", head.name)}
+		}
+		if idx < 0 {
+			return false, &DecodingError{Key: part, Err: fmt.Errorf("negative index %d", idx)}
+		}
+		if cur.Kind() == reflect.Array {
+			// Fixed-size arrays cannot grow: an out-of-range index means the
+			// part does not address a stored element.
+			if idx >= cur.Len() {
+				return false, nil
+			}
+		} else {
+			if d.cfg.maxSliceIndex > 0 && idx >= d.cfg.maxSliceIndex {
+				return false, nil
+			}
+			for cur.Len() <= idx {
+				cur.Set(reflect.Append(cur, reflect.New(cur.Type().Elem()).Elem()))
+			}
+		}
+		elem := cur.Index(idx)
+		if len(tail) == 0 {
+			return d.consumeFileLeaf(elem, headers, part)
+		}
+		return d.consumeFilePartTokens(elem, tail, headers, part, depth+1)
 
-		cur = fieldVal
-		token = head.name
-		depth++
+	case "mapkey":
+		if cur.Kind() != reflect.Map {
+			return false, nil
+		}
+		if cur.IsNil() {
+			if !cur.CanSet() {
+				return false, nil
+			}
+			cur.Set(reflect.MakeMap(cur.Type()))
+		}
+		mapKey := reflect.New(cur.Type().Key()).Elem()
+		if err := d.assignScalarTo(mapKey, head.name); err != nil {
+			return false, &DecodingError{Key: part, Err: err}
+		}
+		if len(tail) == 0 {
+			// Leaf map value is a File, []File, or *File.
+			val := reflect.New(cur.Type().Elem()).Elem()
+			used, err := d.consumeFileLeaf(val, headers, part)
+			if err != nil || !used {
+				return false, err
+			}
+			cur.SetMapIndex(mapKey, val)
+			return true, nil
+		}
+		// The map value is a struct; decode into a fresh settable value so the
+		// nested leaf can be written, then hand the populated value to the map.
+		// Start from an existing entry (written by a value part such as
+		// "m[k].name") so the two passes merge rather than replace each other.
+		val := reflect.New(cur.Type().Elem()).Elem()
+		if existing := cur.MapIndex(mapKey); existing.IsValid() {
+			val.Set(existing)
+		}
+		used, err := d.consumeFilePartTokens(val, tail, headers, part, depth+1)
+		if err != nil || !used {
+			return false, err
+		}
+		cur.SetMapIndex(mapKey, val)
+		return true, nil
+
+	default:
+		return false, nil
 	}
 }
 
@@ -768,8 +852,9 @@ func (d *Decoder) applyDefaultsAndRequired(dst reflect.Value, provided map[strin
 		}
 
 		// Anonymous pointer-to-struct embeds flatten like value embeds; a nil
-		// embedded pointer carries no fields to walk. Unexported embeds are
-		// excluded on every walk path (index, encoder) and are skipped here too.
+		// embedded pointer carries no fields to walk. Only exported pointer
+		// embeds are walked here, matching the unmarshal index and both
+		// encoders (unexported value embeds flatten on every path).
 		if sf.Anonymous && sf.IsExported() && sf.Type.Kind() == reflect.Pointer &&
 			sf.Type.Elem().Kind() == reflect.Struct &&
 			sf.Type.Elem() != reflect.TypeOf(File{}) {

@@ -278,8 +278,10 @@ anyform.Unmarshal(body, ct, &got) // reconstructs all nested fields
   value fields **and** `File`/`[]File` fields.
 - File parts are routed through the struct exactly like value keys: a part
   named `meta.avatar` descends from the `Meta` field to its inner `Avatar`
-  field, so `File` fields nested inside named structs round-trip instead of
-  being dropped (and are accepted by strict mode).
+  field, indexed parts fill `[]struct{...}` elements (`docs[0].bin`), and
+  mapped parts create map entries (`m[k]` or `m[k].bin`), so `File` fields
+  round-trip at any nesting instead of being dropped (and are accepted by
+  strict mode).
 - Nil pointers are allocated; absent fields keep their zero value.
 - **Ambiguous keys are errors.** If two different fields resolve to the same
   key (an embedded promoted field and an outer field sharing a tag, or two

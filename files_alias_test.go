@@ -567,3 +567,109 @@ func TestMarshalUnmarshal_RoundTrip_PointerEmbeddedFile(t *testing.T) {
 		t.Errorf("strict avatar = %+v, want f.bin", strict.Avatar)
 	}
 }
+
+// Regression (round-2 gap 1): a File inside a slice-of-structs is emitted as
+// "docs[0].bin" and must route back to that slice element on decode — it is
+// neither dropped nor rejected as unknown under strict mode.
+type sliceDoc struct {
+	Name string `form:"name"`
+	Bin  File   `form:"bin"`
+}
+
+type slicePack struct {
+	Docs []sliceDoc `form:"docs"`
+}
+
+func TestMarshalUnmarshal_RoundTrip_FileInSliceOfStructs(t *testing.T) {
+	in := slicePack{Docs: []sliceDoc{{
+		Name: "a",
+		Bin:  File{Content: []byte("x"), Filename: "a.bin"},
+	}}}
+	body, ct, err := Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got slicePack
+	if err := Unmarshal(body, ct, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(got.Docs) != 1 || got.Docs[0].Name != "a" || string(got.Docs[0].Bin.Content) != "x" {
+		t.Fatalf("file inside slice-of-structs lost: %+v", got.Docs)
+	}
+
+	var strict slicePack
+	if err := Unmarshal(body, ct, &strict, WithStrictUnmarshal(true)); err != nil {
+		t.Fatalf("strict Unmarshal: %v", err)
+	}
+	if len(strict.Docs) != 1 || string(strict.Docs[0].Bin.Content) != "x" {
+		t.Fatalf("strict file inside slice-of-structs lost: %+v", strict.Docs)
+	}
+}
+
+// Regression (round-2 gap 2): a File stored directly in a map value is emitted
+// as "m[k]" and must route back to that map entry instead of leaving the map
+// empty.
+type mapFilePack struct {
+	M map[string]File `form:"m"`
+}
+
+func TestMarshalUnmarshal_RoundTrip_FileInMap(t *testing.T) {
+	in := mapFilePack{M: map[string]File{
+		"k": {Content: []byte("x"), Filename: "k.bin"},
+	}}
+	body, ct, err := Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got mapFilePack
+	if err := Unmarshal(body, ct, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	f, ok := got.M["k"]
+	if !ok || string(f.Content) != "x" {
+		t.Fatalf("file inside map lost: %+v", got.M)
+	}
+
+	var strict mapFilePack
+	if err := Unmarshal(body, ct, &strict, WithStrictUnmarshal(true)); err != nil {
+		t.Fatalf("strict Unmarshal: %v", err)
+	}
+	if s, ok := strict.M["k"]; !ok || string(s.Content) != "x" {
+		t.Fatalf("strict file inside map lost: %+v", strict.M)
+	}
+}
+
+// Regression (round-2 gap 2): a File promoted inside a map-of-struct value is
+// emitted as "m[k].bin" and must route back to that nested field.
+type mapStructPack struct {
+	M map[string]sliceDoc `form:"m"`
+}
+
+func TestMarshalUnmarshal_RoundTrip_FileInMapStruct(t *testing.T) {
+	in := mapStructPack{M: map[string]sliceDoc{
+		"k": {Name: "n", Bin: File{Content: []byte("y"), Filename: "y.bin"}},
+	}}
+	body, ct, err := Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got mapStructPack
+	if err := Unmarshal(body, ct, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	d, ok := got.M["k"]
+	if !ok || d.Name != "n" || string(d.Bin.Content) != "y" {
+		t.Fatalf("file inside map-of-struct lost: %+v", got.M)
+	}
+
+	var strict mapStructPack
+	if err := Unmarshal(body, ct, &strict, WithStrictUnmarshal(true)); err != nil {
+		t.Fatalf("strict Unmarshal: %v", err)
+	}
+	if s, ok := strict.M["k"]; !ok || string(s.Bin.Content) != "y" {
+		t.Fatalf("strict file inside map-of-struct lost: %+v", strict.M)
+	}
+}
