@@ -511,6 +511,30 @@ func TestDecoder_Unmarshal_MapOfStruct(t *testing.T) {
 	}
 }
 
+// Regression: distinct keys targeting the same map-of-struct element
+// ("m[key].name" + "m[key].age", or a struct entry later completed by a file
+// part "m[key].bin") must merge into one entry instead of each replacing the
+// previous one.
+func TestDecoder_Unmarshal_MapOfStructKeysMerge(t *testing.T) {
+	dec := NewDecoder()
+	vals := url.Values{
+		"m[key].name": {"n"},
+		"m[key].age":  {"30"},
+	}
+	var out struct {
+		M map[string]struct {
+			Name string `form:"name"`
+			Age  string `form:"age"`
+		} `form:"m"`
+	}
+	if err := dec.Unmarshal(vals, &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got := out.M["key"]; got.Name != "n" || got.Age != "30" {
+		t.Errorf("M[key] = %+v, want {n 30}", got)
+	}
+}
+
 // Regression: promoted fields from an embedded struct must be addressed by an
 // index that is valid on the OUTER struct (embedded field's index prepended),
 // not the embedded type's own index. Previously the value was silently dropped
