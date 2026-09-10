@@ -71,8 +71,10 @@
 //
 // File parts are routed through the struct exactly like value keys: a part
 // named "meta.avatar" descends from the Meta field to its inner Avatar field,
-// so File fields nested inside named structs round-trip instead of being
-// dropped (and are accepted by WithStrictUnmarshal).
+// indexed parts fill slice-of-struct elements ("docs[0].bin"), and mapped
+// parts create map entries ("m[k]" or "m[k].bin"), so File fields round-trip
+// at any nesting instead of being dropped (and are accepted by
+// WithStrictUnmarshal).
 //
 // The [File] type holds the raw content, detected content type, and original
 // filename, decoupled from net/http so it works in any context. Note that file
