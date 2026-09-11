@@ -44,74 +44,54 @@ func buildAliasValueBody(t *testing.T, field, content string) ([]byte, string) {
 	return buf.Bytes(), mw.FormDataContentType()
 }
 
-// A value part applied to a File field means the client sent the part without
-// a filename, so the error must say so — not the old cryptic notices.
-func TestFileFieldValuePartClearError(t *testing.T) {
+// A value part applied to a File field is the signature of an untouched
+// browser file input: its empty filename makes the multipart parser route it
+// to the value store. Failing the whole decode for an optional file box the
+// user left empty would break a normal form, so the part is skipped and the
+// rest of the request still decodes (mirroring the encoder, which omits Files
+// without a filename).
+func TestFileFieldValuePartSkipped(t *testing.T) {
 	type S struct {
 		Avatar File `form:"avatar"`
 	}
 
 	body, ct := buildAliasValueBody(t, "avatar", "plain")
 	var v S
-	err := Unmarshal(body, ct, &v)
-	if err == nil {
-		t.Fatal("expected error")
+	if err := Unmarshal(body, ct, &v); err != nil {
+		t.Fatalf("untouched file input must not fail the decode: %v", err)
 	}
-	var de *DecodingError
-	if !errors.As(err, &de) {
-		t.Fatalf("expected DecodingError, got %T: %v", err, err)
-	}
-	if de.FieldPath != "avatar" {
-		t.Errorf("FieldPath = %q, want %q", de.FieldPath, "avatar")
-	}
-	if got := de.Err.Error(); got != "cannot decode value part into File field: multipart file parts must include a filename" {
-		t.Fatalf("unexpected message: %q", got)
+	if v.Avatar.Filename != "" || len(v.Avatar.Content) != 0 {
+		t.Fatalf("avatar should have been skipped, got %+v", v.Avatar)
 	}
 }
 
-func TestFileSliceFieldValuePartClearError(t *testing.T) {
+func TestFileSliceFieldValuePartSkipped(t *testing.T) {
 	type S struct {
 		Docs []File `form:"docs"`
 	}
 
 	body, ct := buildAliasValueBody(t, "docs", "plain")
 	var v S
-	err := Unmarshal(body, ct, &v)
-	if err == nil {
-		t.Fatal("expected error")
+	if err := Unmarshal(body, ct, &v); err != nil {
+		t.Fatalf("untouched file input must not fail the decode: %v", err)
 	}
-	var de *DecodingError
-	if !errors.As(err, &de) {
-		t.Fatalf("expected DecodingError, got %T: %v", err, err)
-	}
-	if de.FieldPath != "docs" {
-		t.Errorf("FieldPath = %q, want %q", de.FieldPath, "docs")
-	}
-	if got := de.Err.Error(); got != "cannot decode value part into []File field: multipart file parts must include a filename" {
-		t.Fatalf("unexpected message: %q", got)
+	if len(v.Docs) != 0 {
+		t.Fatalf("docs should have been skipped, got %+v", v.Docs)
 	}
 }
 
-func TestFilePtrFieldValuePartClearError(t *testing.T) {
+func TestFilePtrFieldValuePartSkipped(t *testing.T) {
 	type S struct {
 		Avatar *File `form:"avatar"`
 	}
 
 	body, ct := buildAliasValueBody(t, "avatar", "plain")
 	var v S
-	err := Unmarshal(body, ct, &v)
-	if err == nil {
-		t.Fatal("expected error")
+	if err := Unmarshal(body, ct, &v); err != nil {
+		t.Fatalf("untouched file input must not fail the decode: %v", err)
 	}
-	var de *DecodingError
-	if !errors.As(err, &de) {
-		t.Fatalf("expected DecodingError, got %T: %v", err, err)
-	}
-	if de.FieldPath != "avatar" {
-		t.Errorf("FieldPath = %q, want %q", de.FieldPath, "avatar")
-	}
-	if got := de.Err.Error(); got != "cannot decode value part into File field: multipart file parts must include a filename" {
-		t.Fatalf("unexpected message: %q", got)
+	if v.Avatar != nil {
+		t.Fatalf("avatar should have been skipped, got %+v", v.Avatar)
 	}
 }
 
