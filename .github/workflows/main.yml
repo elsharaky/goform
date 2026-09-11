@@ -9,12 +9,22 @@ on:
     types: [closed]
     branches: [main]
 
+# Serialize release runs: if two PRs merge close together, only one job may
+# compute and push a tag at a time. Do not cancel an in-flight release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write # to create tags and GitHub releases
 
 jobs:
   release:
     name: Semantic Release
+    # The repo guard keeps this job from running in forks.
+    # NOTE: github.actor != 'github-actions[bot]' is defense-in-depth only and
+    # not a functional safeguard against loops — on pull_request: closed the
+    # actor is the person who merged the PR, never the release bot.
     if: github.repository == 'elsharaky/goform' && github.event.pull_request.merged == true && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -31,6 +41,9 @@ jobs:
           cache: true
 
       - name: Run tests
+        # Sanity re-run before tagging; the real quality gate (vet, lint,
+        # gosec, govulncheck, race tests) is the required `ci` check on the PR
+        # itself, enforced by branch protection.
         run: go test -race ./...
 
       # semantic-release hardcodes the very first release to 1.0.0, but we
@@ -51,6 +64,12 @@ jobs:
       # analyzes Conventional Commits since the last tag. If the merged PR
       # carries release-triggering commits (feat/fix/BREAKING), tags main with
       # vX.Y.Z and publishes the GitHub Release; otherwise it exits quietly.
+      #
+      # .releaserc caps breaking commits to a minor bump (releaseRules:
+      # { breaking: true, release: "minor" }) so the pre-1.0 project lands at
+      # 0.1.0 instead of jumping to v1.0.0. When the project deliberately
+      # releases its first real v1.0.0, remove that override from .releaserc
+      # so breaking changes can bump the major version normally again.
       #
       # .releaserc uses the `conventionalcommits` preset, which lives in
       # `conventional-changelog-conventionalcommits`. semantic-release v24 has
