@@ -37,7 +37,7 @@ func Marshal(v any, opts ...Option) ([]byte, string, error) {
 		return nil, "", &EncodingError{Err: err}
 	}
 
-	if scanForFiles(rv, make(map[reflect.Type]bool), 0) {
+	if scanForFiles(rv, make(map[reflect.Type]bool), 0, cfg.maxDepth, enc.resolver) {
 		return enc.MarshalMultipart(v)
 	}
 
@@ -120,8 +120,14 @@ func isMultipartContentType(contentType string) bool {
 // scanForFiles walks v (recursively) and reports whether it contains any
 // File or []File field that would require multipart serialization.
 // visited guards against self-referential types to avoid infinite recursion.
-func scanForFiles(rv reflect.Value, visited map[reflect.Type]bool, depth int) bool {
-	if !rv.IsValid() || depth > defaultMaxDepth {
+// The walk is bounded by the encoder's own maxDepth and honors struct tags
+// (form:"-" and friends) exactly like the encoder, so a skipped field can
+// never drag an embedded File into multipart.
+func scanForFiles(rv reflect.Value, visited map[reflect.Type]bool, depth int, maxDepth int, r *tagResolver) bool {
+	if !rv.IsValid() {
+		return false
+	}
+	if maxDepth > 0 && depth > maxDepth {
 		return false
 	}
 
@@ -130,10 +136,10 @@ func scanForFiles(rv reflect.Value, visited map[reflect.Type]bool, depth int) bo
 		if rv.IsNil() {
 			return false
 		}
-		return scanForFiles(rv.Elem(), visited, depth+1)
+		return scanForFiles(rv.Elem(), visited, depth+1, maxDepth, r)
 	case reflect.Slice, reflect.Array:
 		for i := range rv.Len() {
-			if scanForFiles(rv.Index(i), visited, depth+1) {
+			if scanForFiles(rv.Index(i), visited, depth+1, maxDepth, r) {
 				return true
 			}
 		}
@@ -141,7 +147,7 @@ func scanForFiles(rv reflect.Value, visited map[reflect.Type]bool, depth int) bo
 	case reflect.Map:
 		iter := rv.MapRange()
 		for iter.Next() {
-			if scanForFiles(iter.Value(), visited, depth+1) {
+			if scanForFiles(iter.Value(), visited, depth+1, maxDepth, r) {
 				return true
 			}
 		}
@@ -179,19 +185,35 @@ func scanForFiles(rv reflect.Value, visited map[reflect.Type]bool, depth int) bo
 		return false
 	}
 	visited[t] = true
-	found := scanForFilesStruct(rv, visited, t, depth)
+	found := scanForFilesStruct(rv, visited, t, depth, maxDepth, r)
 	delete(visited, t)
 	return found
 }
 
-// scanForFilesStruct scans the exported fields of a struct value. It is split
-// out so visit tracking can be released on every return path.
-func scanForFilesStruct(rv reflect.Value, visited map[reflect.Type]bool, t reflect.Type, depth int) bool {
+// scanForFilesStruct scans the fields of a struct value, recursing into
+// embedded structs and skipping fields the encoder would skip (unexported,
+// form:"-", explicit omit) so the format decision tracks what multipart would
+// actually serialize.
+func scanForFilesStruct(rv reflect.Value, visited map[reflect.Type]bool, t reflect.Type, depth int, maxDepth int, r *tagResolver) bool {
 	for i := range t.NumField() {
-		if !t.Field(i).IsExported() {
+		sf := t.Field(i)
+		// Anonymous embedded structs are flattened by every codec path and are
+		// not individually skippable; recurse past them.
+		if sf.Anonymous {
+			if scanForFiles(rv.Field(i), visited, depth+1, maxDepth, r) {
+				return true
+			}
 			continue
 		}
-		if scanForFiles(rv.Field(i), visited, depth+1) {
+		if !sf.IsExported() {
+			continue
+		}
+		if r != nil {
+			if _, skip := r.marshalFieldName(sf); skip {
+				continue
+			}
+		}
+		if scanForFiles(rv.Field(i), visited, depth+1, maxDepth, r) {
 			return true
 		}
 	}

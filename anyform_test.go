@@ -103,3 +103,19 @@ func TestMarshalAutoDetectMultipart(t *testing.T) {
 		t.Errorf("expected multipart, got %q", ct2)
 	}
 }
+
+// Round-3 #10: scanForFiles must respect form:"-" — a tagged-out File field
+// must not force multipart encoding.
+func TestMarshalTaggedOutFileStaysURLEncoded(t *testing.T) {
+	type s struct {
+		Name string `form:"name"`
+		Doc  File   `form:"-"`
+	}
+	_, ct, err := Marshal(s{Name: "n"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if ct != "application/x-www-form-urlencoded" {
+		t.Errorf("expected urlencoded despite form:\"-\" File, got %q", ct)
+	}
+}
