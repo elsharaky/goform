@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/elsharaky/anyform"
+	"github.com/elsharaky/goform"
 )
 
 type Address struct {
@@ -37,7 +37,7 @@ func main() {
 		Metadata: map[string]string{"rush": "yes"},
 	}
 
-	enc := anyform.NewEncoder()
+	enc := goform.NewEncoder()
 	vals, err := enc.Marshal(in)
 	if err != nil {
 		panic(err)
@@ -45,7 +45,7 @@ func main() {
 	fmt.Println("Marshalled URL query:")
 	fmt.Println(vals.Encode())
 
-	dec := anyform.NewDecoder()
+	dec := goform.NewDecoder()
 	var out Order
 	src := url.Values{
 		"id":             {"100"},

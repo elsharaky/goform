@@ -1,18 +1,18 @@
-# anyform — Developer Tutorial
+# goform — Developer Tutorial
 
-A practical, step-by-step guide to using `anyform` in your Go application. By
+A practical, step-by-step guide to using `goform` in your Go application. By
 the end you'll be able to marshal structs into request bodies and unmarshal
 request bodies back into structs, including file uploads, nested types, and
 custom converters.
 
-If you're implementing or maintaining `anyform` itself, see
+If you're implementing or maintaining `goform` itself, see
 [MAINTAINER.md](MAINTAINER.md).
 
 ---
 
-## 1. What anyform does
+## 1. What goform does
 
-`anyform` serializes Go structs to and from **HTML form data** in two flavors:
+`goform` serializes Go structs to and from **HTML form data** in two flavors:
 
 - **`application/x-www-form-urlencoded`** — flat `key=value` strings.
 - **`multipart/form-data`** — used whenever the data contains file uploads.
@@ -26,7 +26,7 @@ it figures out the format for you — or you produce exactly that pair.
 ## 2. Installation
 
 ```bash
-go get github.com/elsharaky/anyform
+go get github.com/elsharaky/goform
 ```
 
 Requires **Go 1.27+** (`any` type, `reflect.StructField.IsExported`, etc.).
@@ -38,7 +38,7 @@ Requires **Go 1.27+** (`any` type, `reflect.StructField.IsExported`, etc.).
 The entire library surfaces as two functions:
 
 ```go
-import "github.com/elsharaky/anyform"
+import "github.com/elsharaky/goform"
 
 type User struct {
     Name  string `form:"name"`
@@ -47,13 +47,13 @@ type User struct {
 }
 
 // Marshal: struct -> (body bytes, Content-Type)
-body, ct, err := anyform.Marshal(User{Name: "Alice", Email: "alice@example.com", Age: 30})
+body, ct, err := goform.Marshal(User{Name: "Alice", Email: "alice@example.com", Age: 30})
 // body == "age=30&email=alice%40example.com&name=Alice"
 // ct   == "application/x-www-form-urlencoded"
 
 // Unmarshal: (body bytes, Content-Type) -> struct
 var user User
-err := anyform.Unmarshal(body, ct, &user)
+err := goform.Unmarshal(body, ct, &user)
 ```
 
 That's the whole mental model. `Marshal` returns the exact pair you'd put in a
@@ -63,13 +63,13 @@ request or response; `Unmarshal` consumes the exact pair you'd receive.
 
 ```go
 // Client side
-body, ct, _ := anyform.Marshal(payload)
+body, ct, _ := goform.Marshal(payload)
 resp, _ := http.Post(url, ct, bytes.NewReader(body))
 
 // Server side
 readBody, _ := io.ReadAll(r.Body)
 var payload Payload
-if err := anyform.Unmarshal(readBody, r.Header.Get("Content-Type"), &payload); err != nil {
+if err := goform.Unmarshal(readBody, r.Header.Get("Content-Type"), &payload); err != nil {
     http.Error(w, err.Error(), http.StatusBadRequest)
     return
 }
@@ -138,10 +138,10 @@ instance in the Encoder/Decoder API.
 Example:
 
 ```go
-body, ct, _ := anyform.Marshal(
+body, ct, _ := goform.Marshal(
     event,
-    anyform.WithTimeLayout("2006-01-02"),
-    anyform.WithZeroEmpty(true),
+    goform.WithTimeLayout("2006-01-02"),
+    goform.WithZeroEmpty(true),
 )
 ```
 
@@ -151,9 +151,9 @@ When you configure the same options everywhere (a typical server), build a
 shared instance instead. They are safe for concurrent use.
 
 ```go
-dec := anyform.NewDecoder(
-    anyform.WithStrictUnmarshal(true),
-    anyform.WithTimeLayout("2006-01-02"),
+dec := goform.NewDecoder(
+    goform.WithStrictUnmarshal(true),
+    goform.WithTimeLayout("2006-01-02"),
 )
 // reuse dec across requests via dec.Unmarshal(vals, &v)
 ```
@@ -172,14 +172,14 @@ type Config struct {
 
 - `,omitempty` — skip empty values when marshalling.
 - `,required` — return `ErrMissingRequired` when the field is absent on
-  unmarshal. Check with `errors.Is(err, anyform.ErrMissingRequired)`.
+  unmarshal. Check with `errors.Is(err, goform.ErrMissingRequired)`.
 - `,default:v` — populate an absent **scalar** field with `v` on unmarshal.
 
 ---
 
 ## 7. Supported Go types
 
-`anyform` handles essentially everything:
+`goform` handles essentially everything:
 
 - **Scalars** — `string`, `bool`, all `int`/`uint`/`float`/`complex` widths.
 - **Named types** — `type MyInt int`, `type Status string`.
@@ -219,7 +219,7 @@ type Order struct {
     Discount map[string]string `form:"discount"`
 }
 
-body, ct, _ := anyform.Marshal(Order{
+body, ct, _ := goform.Marshal(Order{
     ID:       42,
     ShipTo:   Address{City: "Lyon", ZIP: "69001"},
     Lines:    []string{"A", "B"},
@@ -228,7 +228,7 @@ body, ct, _ := anyform.Marshal(Order{
 // body: discount%5Bcode%5D=SAVE10&id=42&line%5B0%5D=A&line%5B1%5D=B&ship_to.city=Lyon&ship_to.zip=69001
 
 var got Order
-anyform.Unmarshal(body, ct, &got) // reconstructs everything
+goform.Unmarshal(body, ct, &got) // reconstructs everything
 ```
 
 > Repeating a scalar key (`k=a&k=b`) yields a `[]string` / slice on unmarshal.
@@ -237,7 +237,7 @@ anyform.Unmarshal(body, ct, &got) // reconstructs everything
 
 ## 9. File uploads
 
-`anyform.File` decouples file handling from `net/http`:
+`goform.File` decouples file handling from `net/http`:
 
 ```go
 type File struct {
@@ -253,20 +253,20 @@ detects** the `File` fields and switches to multipart automatically.
 ```go
 type Upload struct {
     Title  string         `form:"title"`
-    Avatar anyform.File   `form:"avatar"`
-    Docs   []anyform.File `form:"documents"`
+    Avatar goform.File   `form:"avatar"`
+    Docs   []goform.File `form:"documents"`
 }
 
 // Client
-body, ct, err := anyform.Marshal(Upload{
+body, ct, err := goform.Marshal(Upload{
     Title:  "Report",
-    Avatar: anyform.File{Filename: "report.pdf", Content: []byte("%PDF"), ContentType: "application/pdf"},
-    Docs:   []anyform.File{{Filename: "n.txt", Content: []byte("n"), ContentType: "text/plain"}},
+    Avatar: goform.File{Filename: "report.pdf", Content: []byte("%PDF"), ContentType: "application/pdf"},
+    Docs:   []goform.File{{Filename: "n.txt", Content: []byte("n"), ContentType: "text/plain"}},
 })
 
 // Server (HTTP-agnostic decode)
 var up Upload
-err := anyform.Unmarshal(body, ct, &up)
+err := goform.Unmarshal(body, ct, &up)
 fmt.Println(up.Avatar.Filename, string(up.Avatar.Content))
 ```
 
@@ -281,11 +281,11 @@ fmt.Println(up.Avatar.Filename, string(up.Avatar.Content))
 
 ```go
 var up Upload
-err := anyform.Unmarshal(body, ct, &up,
-    anyform.WithMaxBodySize(1<<20*10),  // whole body ≤ 10 MiB
-    anyform.WithMaxFileSize(1<<20*5),   // each file ≤ 5 MiB
+err := goform.Unmarshal(body, ct, &up,
+    goform.WithMaxBodySize(1<<20*10),  // whole body ≤ 10 MiB
+    goform.WithMaxFileSize(1<<20*5),   // each file ≤ 5 MiB
 )
-if errors.Is(err, anyform.ErrFileTooLarge) {
+if errors.Is(err, goform.ErrFileTooLarge) {
     // respond 413 Payload Too Large
 }
 ```
@@ -295,7 +295,7 @@ if errors.Is(err, anyform.ErrFileTooLarge) {
 Two helpers read files out without a full decode:
 
 ```go
-files, err := anyform.FilesFromRequest(req, "documents") // []File
+files, err := goform.FilesFromRequest(req, "documents") // []File
 ```
 
 ---
@@ -330,7 +330,7 @@ func (statusConverter) Unmarshal(s string, f reflect.Value) error {
     return nil
 }
 
-enc := anyform.NewEncoder(anyform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}))
+enc := goform.NewEncoder(goform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}))
 vals, _ := enc.Marshal(acct) // status=active
 ```
 
@@ -369,12 +369,12 @@ Patterns:
 
 ```go
 // Match a class of error
-if errors.Is(err, anyform.ErrMissingRequired) {
+if errors.Is(err, goform.ErrMissingRequired) {
     // respond 400 with "token is required"
 }
 
 // Pull out structured context
-var de *anyform.DecodingError
+var de *goform.DecodingError
 if errors.As(err, &de) {
     log.Printf("failed to decode key %q: %v", de.Key, de.Err)
 }
@@ -397,12 +397,12 @@ if errors.As(err, &de) {
 
 ```go
 func handleCreate(w http.ResponseWriter, r *http.Request) {
-    dec := anyform.NewDecoder(anyform.WithStrictUnmarshal(true))
+    dec := goform.NewDecoder(goform.WithStrictUnmarshal(true))
 
     body, _ := io.ReadAll(r.Body)
     var in CreateInput
-    if err := anyform.Unmarshal(body, r.Header.Get("Content-Type"), &in); err != nil {
-        if errors.Is(err, anyform.ErrMissingRequired) {
+    if err := goform.Unmarshal(body, r.Header.Get("Content-Type"), &in); err != nil {
+        if errors.Is(err, goform.ErrMissingRequired) {
             http.Error(w, "missing required field", http.StatusUnprocessableEntity)
             return
         }
@@ -419,5 +419,5 @@ func handleCreate(w http.ResponseWriter, r *http.Request) {
 ## 14. Where to go next
 
 - Run the examples: `go run ./_examples/basic`, `./_examples/multipart`, etc.
-- Read the full API reference via `go doc github.com/elsharaky/anyform`.
+- Read the full API reference via `go doc github.com/elsharaky/goform`.
 - See the full behavioral spec in `doc.go`.

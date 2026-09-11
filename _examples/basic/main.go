@@ -1,11 +1,11 @@
-// Command basic demonstrates the simplest anyform usage: marshalling a struct
+// Command basic demonstrates the simplest goform usage: marshalling a struct
 // to a body + Content-Type and unmarshalling it back with the unified API.
 package main
 
 import (
 	"fmt"
 
-	"github.com/elsharaky/anyform"
+	"github.com/elsharaky/goform"
 )
 
 type User struct {
@@ -16,7 +16,7 @@ type User struct {
 
 func main() {
 	// Marshal struct -> body bytes + Content-Type.
-	body, ct, err := anyform.Marshal(User{
+	body, ct, err := goform.Marshal(User{
 		Name:  "Alice",
 		Email: "alice@example.com",
 		Age:   30,
@@ -28,7 +28,7 @@ func main() {
 
 	// Unmarshal body + Content-Type -> struct (auto-detects urlencoded here).
 	var user User
-	if err := anyform.Unmarshal(body, ct, &user); err != nil {
+	if err := goform.Unmarshal(body, ct, &user); err != nil {
 		panic(err)
 	}
 	fmt.Printf("Unmarshalled: %+v\n", user)

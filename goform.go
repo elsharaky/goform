@@ -1,4 +1,4 @@
-package anyform
+package goform
 
 import (
 	"bytes"
@@ -27,7 +27,7 @@ const urlEncodedContentType = "application/x-www-form-urlencoded"
 //
 // Example:
 //
-//	body, ct, err := anyform.Marshal(req{Name: "Alice"})
+//	body, ct, err := goform.Marshal(req{Name: "Alice"})
 func Marshal(v any, opts ...Option) ([]byte, string, error) {
 	cfg := newConfig(opts...)
 	enc := &Encoder{cfg: cfg, resolver: newTagResolver(cfg.tagPriority...)}
@@ -60,7 +60,7 @@ func Marshal(v any, opts ...Option) ([]byte, string, error) {
 //
 // Example:
 //
-//	err := anyform.Unmarshal(body, ct, &req)
+//	err := goform.Unmarshal(body, ct, &req)
 func Unmarshal(body []byte, contentType string, v any, opts ...Option) error {
 	cfg := newConfig(opts...)
 	if cfg.maxBodySize > 0 && int64(len(body)) > cfg.maxBodySize {
@@ -88,7 +88,7 @@ func (d *Decoder) unmarshalMultipartBody(body []byte, contentType string, v any)
 	}
 	boundary := params["boundary"]
 	if boundary == "" {
-		return &DecodingError{Err: errors.New("anyform: multipart Content-Type missing boundary")}
+		return &DecodingError{Err: errors.New("goform: multipart Content-Type missing boundary")}
 	}
 
 	mr := multipart.NewReader(bytes.NewReader(body), boundary)

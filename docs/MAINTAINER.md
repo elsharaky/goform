@@ -1,6 +1,6 @@
-# anyform — Maintainer Tutorial
+# goform — Maintainer Tutorial
 
-A deep dive into how `anyform` is designed and built: the architecture, the
+A deep dive into how `goform` is designed and built: the architecture, the
 core algorithms, the public contract, and how to extend and test it.
 
 If you're a user, see [DEVELOPER.md](DEVELOPER.md) instead. For a visual
@@ -10,7 +10,7 @@ overview, see [MINDMAP.md](MINDMAP.md).
 
 ## 1. Goals & design principles
 
-`anyform` is a zero-dependency Go library for struct ↔ form-data conversion.
+`goform` is a zero-dependency Go library for struct ↔ form-data conversion.
 
 Design principles:
 
@@ -33,7 +33,7 @@ Design principles:
 ## 2. Repository layout
 
 ```
-anyform.go            Unified Marshal/Unmarshal + format detection + scanForFiles
+goform.go            Unified Marshal/Unmarshal + format detection + scanForFiles
 encoder.go            Encoder, encodeStruct/Field/Slice/Map + multipart encode
 decoder.go            Decoder, key-path tokenizer, unmarshal, defaults/required
 tag.go                Tag priority resolver, tag parsing, unmarshal index
@@ -110,7 +110,7 @@ type tagOptions struct {
 
 ---
 
-## 4. The unified API and format detection (`anyform.go`)
+## 4. The unified API and format detection (`goform.go`)
 
 ```go
 func Marshal(v any, opts ...Option) (body []byte, contentType string, err error) {

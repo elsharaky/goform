@@ -1,4 +1,4 @@
-package anyform_test
+package goform_test
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/elsharaky/anyform"
+	"github.com/elsharaky/goform"
 )
 
 func ExampleEncoder_Marshal() {
@@ -18,7 +18,7 @@ func ExampleEncoder_Marshal() {
 		Age   int    `form:"age"`
 	}
 
-	enc := anyform.NewEncoder()
+	enc := goform.NewEncoder()
 	vals, err := enc.Marshal(User{
 		Name:  "Alice",
 		Email: "alice@example.com",
@@ -52,7 +52,7 @@ func ExampleDecoder_Unmarshal() {
 	}
 
 	var user User
-	dec := anyform.NewDecoder()
+	dec := goform.NewDecoder()
 	if err := dec.Unmarshal(vals, &user); err != nil {
 		fmt.Println("error:", err)
 		return
@@ -73,7 +73,7 @@ func Example_tagPriority() {
 		Note string
 	}
 
-	enc := anyform.NewEncoder()
+	enc := goform.NewEncoder()
 	vals, _ := enc.Marshal(Product{
 		ID:   7,
 		Name: "Widget",
@@ -99,7 +99,7 @@ func Example_customTagPriority() {
 	}
 
 	// Prioritize json over form.
-	enc := anyform.NewEncoder(anyform.WithTagPriority("json", "form", "protobuf"))
+	enc := goform.NewEncoder(goform.WithTagPriority("json", "form", "protobuf"))
 	vals, _ := enc.Marshal(Payload{ID: 3, Name: "n"})
 
 	fmt.Println(vals.Get("json_id"))
@@ -111,15 +111,15 @@ func Example_customTagPriority() {
 
 func Example_fileUpload() {
 	type Upload struct {
-		Title  string       `form:"title"`
-		Avatar anyform.File `form:"avatar"`
+		Title  string      `form:"title"`
+		Avatar goform.File `form:"avatar"`
 	}
 
 	// client marshals into multipart
-	enc := anyform.NewEncoder()
+	enc := goform.NewEncoder()
 	body, contentType, err := enc.MarshalMultipart(Upload{
 		Title:  "My Avatar",
-		Avatar: anyform.File{Content: []byte("image-bytes"), ContentType: "image/png", Filename: "me.png"},
+		Avatar: goform.File{Content: []byte("image-bytes"), ContentType: "image/png", Filename: "me.png"},
 	})
 	if err != nil {
 		fmt.Println("error:", err)
@@ -132,7 +132,7 @@ func Example_fileUpload() {
 	_ = req.ParseMultipartForm(1 << 20)
 
 	var upload Upload
-	dec := anyform.NewDecoder()
+	dec := goform.NewDecoder()
 	if err := dec.UnmarshalMultipart(req, &upload); err != nil {
 		fmt.Println("error:", err)
 		return
@@ -149,7 +149,7 @@ func Example_fileUpload() {
 
 func Example_customConverter() {
 	// Convert a custom type to/from a string using a Converter.
-	enc := anyform.NewEncoder(anyform.WithCustomConverter(reflect.TypeOf(exampleStatus(0)), exampleStatusConverter{}))
+	enc := goform.NewEncoder(goform.WithCustomConverter(reflect.TypeOf(exampleStatus(0)), exampleStatusConverter{}))
 	vals, err := enc.Marshal(exampleAccount{Status: exampleStatusActive})
 	if err != nil {
 		fmt.Println("error:", err)
@@ -205,7 +205,7 @@ func ExampleMarshal() {
 		Age  int    `form:"age"`
 	}
 
-	body, ct, err := anyform.Marshal(User{Name: "Alice", Age: 30})
+	body, ct, err := goform.Marshal(User{Name: "Alice", Age: 30})
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -226,10 +226,10 @@ func ExampleUnmarshal() {
 		Age  int    `form:"age"`
 	}
 
-	body, ct, _ := anyform.Marshal(User{Name: "Bob", Age: 25})
+	body, ct, _ := goform.Marshal(User{Name: "Bob", Age: 25})
 
 	var user User
-	if err := anyform.Unmarshal(body, ct, &user); err != nil {
+	if err := goform.Unmarshal(body, ct, &user); err != nil {
 		fmt.Println("error:", err)
 		return
 	}
@@ -242,27 +242,27 @@ func Example_unifiedFileUpload() {
 	// The unified API auto-detects File fields and produces/consumes multipart,
 	// with no net/http dependency on either side.
 	type Upload struct {
-		Title  string         `form:"title"`
-		Avatar anyform.File   `form:"avatar"`
-		Docs   []anyform.File `form:"documents"`
+		Title  string        `form:"title"`
+		Avatar goform.File   `form:"avatar"`
+		Docs   []goform.File `form:"documents"`
 	}
 
 	req := Upload{
 		Title:  "Quarterly Report",
-		Avatar: anyform.File{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("%PDF")},
-		Docs: []anyform.File{
+		Avatar: goform.File{Filename: "report.pdf", ContentType: "application/pdf", Content: []byte("%PDF")},
+		Docs: []goform.File{
 			{Filename: "notes.txt", ContentType: "text/plain", Content: []byte("notes")},
 		},
 	}
 
-	body, ct, err := anyform.Marshal(req)
+	body, ct, err := goform.Marshal(req)
 	if err != nil {
 		fmt.Println("error:", err)
 		return
 	}
 
 	var resp Upload
-	if err := anyform.Unmarshal(body, ct, &resp); err != nil {
+	if err := goform.Unmarshal(body, ct, &resp); err != nil {
 		fmt.Println("error:", err)
 		return
 	}
@@ -296,7 +296,7 @@ func Example_nestedSlicesAndMaps() {
 		Discount: map[string]string{"code": "SAVE10"},
 	}
 
-	body, ct, err := anyform.Marshal(order)
+	body, ct, err := goform.Marshal(order)
 	if err != nil {
 		fmt.Println("error:", err)
 		return
@@ -304,7 +304,7 @@ func Example_nestedSlicesAndMaps() {
 	fmt.Println(string(body))
 
 	var got Order
-	if err := anyform.Unmarshal(body, ct, &got); err != nil {
+	if err := goform.Unmarshal(body, ct, &got); err != nil {
 		fmt.Println("error:", err)
 		return
 	}
@@ -321,7 +321,7 @@ func Example_defaultAndRequiredTags() {
 		Token  string `form:"token,required"`
 	}
 
-	dec := anyform.NewDecoder()
+	dec := goform.NewDecoder()
 
 	// token provided, region absent -> default is applied.
 	var cfg Config
@@ -337,5 +337,5 @@ func Example_defaultAndRequiredTags() {
 	fmt.Println(err)
 	// Output:
 	// region=us-east token=abc
-	// anyform: decoding (key "token"): anyform: missing required field
+	// goform: decoding (key "token"): goform: missing required field
 }

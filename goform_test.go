@@ -1,4 +1,4 @@
-package anyform
+package goform
 
 import (
 	"net/url"

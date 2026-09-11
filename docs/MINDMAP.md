@@ -1,11 +1,11 @@
-# anyform — Package Mind Map
+# goform — Package Mind Map
 
 A visual, text-based map of the package: what it is, its public API, internal
 architecture, and how the pieces hang together.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                            anyform (package)                            │
+│                            goform (package)                            │
 │      Zero-dependency Go struct <-> form-data (url-encoded + multipart)  │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -44,7 +44,7 @@ Err* sentinels                       ✔  errors.Is targets
   WithMaxBodySize  WithMaxFileSize
 ```
 
-## Unified API (anyform.go)
+## Unified API (goform.go)
 
 ```
 Marshal(v, opts...)
