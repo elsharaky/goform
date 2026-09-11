@@ -1,4 +1,4 @@
-package anyform
+package goform
 
 import (
 	"net/url"
@@ -13,6 +13,12 @@ type unifiedReq struct {
 	Login *bool             `form:"login"`
 	Tags  []string          `form:"tags"`
 	Meta  map[string]string `form:"meta"`
+}
+
+type unifiedUpload struct {
+	Title  string `form:"title"`
+	Avatar File   `form:"avatar"`
+	Docs   []File `form:"docs"`
 }
 
 func TestMarshalURLEncoded(t *testing.T) {
@@ -46,46 +52,6 @@ func TestUnmarshalURLEncoded(t *testing.T) {
 	}
 }
 
-type unifiedUpload struct {
-	Title  string `form:"title"`
-	Avatar File   `form:"avatar"`
-	Docs   []File `form:"docs"`
-}
-
-func TestMarshalUnmarshalMultipartRoundTrip(t *testing.T) {
-	in := unifiedUpload{
-		Title:  "Hello",
-		Avatar: File{Filename: "a.png", ContentType: "image/png", Content: []byte("PNG")},
-		Docs: []File{
-			{Filename: "one.txt", ContentType: "text/plain", Content: []byte("one")},
-			{Filename: "two.txt", ContentType: "text/plain", Content: []byte("two")},
-		},
-	}
-
-	body, ct, err := Marshal(in)
-	if err != nil {
-		t.Fatalf("Marshal multipart: %v", err)
-	}
-	if ct == "application/x-www-form-urlencoded" {
-		t.Fatal("expected multipart content type")
-	}
-
-	var out unifiedUpload
-	if err := Unmarshal(body, ct, &out); err != nil {
-		t.Fatalf("Unmarshal multipart: %v", err)
-	}
-
-	if out.Title != "Hello" {
-		t.Errorf("title = %q", out.Title)
-	}
-	if string(out.Avatar.Content) != "PNG" || out.Avatar.Filename != "a.png" {
-		t.Errorf("avatar = %+v", out.Avatar)
-	}
-	if len(out.Docs) != 2 || string(out.Docs[1].Content) != "two" {
-		t.Errorf("docs = %+v", out.Docs)
-	}
-}
-
 func TestMarshalAutoDetectMultipart(t *testing.T) {
 	_, ct, err := Marshal(unifiedReq{Name: "x"})
 	if err != nil {
@@ -104,8 +70,17 @@ func TestMarshalAutoDetectMultipart(t *testing.T) {
 	}
 }
 
-// Round-3 #10: scanForFiles must respect form:"-" — a tagged-out File field
-// must not force multipart encoding.
+func TestUnmarshalURLEncodedHTTPCompatible(t *testing.T) {
+	var out unifiedReq
+	body := []byte("name=carol&age=40")
+	if err := Unmarshal(body, "application/x-www-form-urlencoded; charset=UTF-8", &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out.Name != "carol" || out.Age != 40 {
+		t.Errorf("got %+v", out)
+	}
+}
+
 func TestMarshalTaggedOutFileStaysURLEncoded(t *testing.T) {
 	type s struct {
 		Name string `form:"name"`

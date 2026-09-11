@@ -1,4 +1,4 @@
-package anyform
+package goform
 
 import (
 	"encoding"
@@ -126,7 +126,7 @@ func (d *Decoder) UnmarshalMultipart(r *http.Request, v any) error {
 // populating both scalar and File fields.
 func (d *Decoder) UnmarshalMultipartForm(mf *multipart.Form, v any) error {
 	if mf == nil {
-		return &DecodingError{Err: errors.New("anyform: nil multipart form")}
+		return &DecodingError{Err: errors.New("goform: nil multipart form")}
 	}
 
 	rv := reflect.ValueOf(v)

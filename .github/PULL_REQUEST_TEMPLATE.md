@@ -1,6 +1,6 @@
 ---
 name: Pull request
-about: Contribute a change to anyform
+about: Contribute a change to goform
 title: ''
 labels: ''
 assignees: ''

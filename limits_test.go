@@ -1,8 +1,9 @@
-package anyform
+package goform
 
 import (
 	"bytes"
 	"errors"
+	"mime"
 	"mime/multipart"
 	"net/http/httptest"
 	"testing"
@@ -151,5 +152,88 @@ func TestWithMaxFileSize_MultiFileRejectsWholeInput(t *testing.T) {
 	}
 	if !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestOption_ZeroEmptyOmitsZeroValues(t *testing.T) {
+	type z struct {
+		Name  string  `form:"name"`
+		Age   int     `form:"age"`
+		Score float64 `form:"score"`
+	}
+
+	// Default: zero values are emitted.
+	vals, err := NewEncoder().Marshal(z{Name: "x"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if vals.Get("age") != "0" || vals.Get("score") != "0" {
+		t.Errorf("default: expected zero values emitted, got %v", vals)
+	}
+
+	// WithZeroEmpty: zero values omitted, provided values kept.
+	enc := NewEncoder(WithZeroEmpty(true))
+	vals, err = enc.Marshal(z{Name: "x", Age: 7})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if vals.Get("age") != "7" {
+		t.Errorf("age = %q, want 7", vals.Get("age"))
+	}
+	if _, ok := vals["score"]; ok {
+		t.Errorf("expected score omitted, got %v", vals)
+	}
+	if vals.Get("name") != "x" {
+		t.Errorf("name = %q, want x", vals.Get("name"))
+	}
+}
+
+func TestOption_MarshalMultipartNoFileFields(t *testing.T) {
+	type simple struct {
+		Name string `form:"name"`
+		Age  int    `form:"age"`
+	}
+
+	enc := NewEncoder()
+	body, ct, err := enc.MarshalMultipart(simple{Name: "x", Age: 3})
+	if err != nil {
+		t.Fatalf("MarshalMultipart: %v", err)
+	}
+
+	var out simple
+	if err := Unmarshal(body, ct, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out.Name != "x" || out.Age != 3 {
+		t.Errorf("round-trip: got %+v", out)
+	}
+}
+
+func TestOption_MarshalMultipartFormDataContentTypeBoundary(t *testing.T) {
+	body, ct, err := Marshal(unifiedUpload{Avatar: File{Filename: "photo.png", Content: []byte("x")}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	mt, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		t.Fatalf("parse ct: %v", err)
+	}
+	if mt != "multipart/form-data" {
+		t.Errorf("media type = %q", mt)
+	}
+	if params["boundary"] == "" {
+		t.Error("missing boundary")
+	}
+	var out unifiedUpload
+	if err := Unmarshal(body, ct, &out); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+}
+
+func TestOption_UnmarshalMultipartWithoutBoundary(t *testing.T) {
+	var out unifiedReq
+	err := Unmarshal([]byte("name=bob"), "multipart/form-data", &out)
+	if err == nil {
+		t.Fatal("expected error for missing boundary")
 	}
 }

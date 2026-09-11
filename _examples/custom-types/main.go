@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/elsharaky/anyform"
+	"github.com/elsharaky/goform"
 )
 
 // Status is a custom integer type with a string converter.
@@ -54,9 +54,9 @@ type Event struct {
 }
 
 func main() {
-	enc := anyform.NewEncoder(
-		anyform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}),
-		anyform.WithTimeLayout(time.RFC3339),
+	enc := goform.NewEncoder(
+		goform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}),
+		goform.WithTimeLayout(time.RFC3339),
 	)
 	in := Event{
 		Title:    "Launch",
@@ -71,8 +71,8 @@ func main() {
 	fmt.Println("Marshalled:")
 	fmt.Println(vals.Encode())
 
-	dec := anyform.NewDecoder(
-		anyform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}),
+	dec := goform.NewDecoder(
+		goform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}),
 	)
 	var out Event
 	src := url.Values{

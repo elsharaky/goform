@@ -1,4 +1,4 @@
-package anyform
+package goform
 
 import (
 	"errors"
@@ -30,7 +30,7 @@ func (c *timeConverter) Marshal(value reflect.Value) (string, error) {
 	}
 	t, ok := value.Interface().(time.Time)
 	if !ok {
-		return "", &EncodingError{Err: errors.New("anyform: value is not time.Time")}
+		return "", &EncodingError{Err: errors.New("goform: value is not time.Time")}
 	}
 	return t.Format(c.layout), nil
 }
@@ -63,7 +63,7 @@ func (durationConverter) Marshal(value reflect.Value) (string, error) {
 		}
 		return d.String(), nil
 	}
-	return "", &EncodingError{Err: errors.New("anyform: value is not time.Duration")}
+	return "", &EncodingError{Err: errors.New("goform: value is not time.Duration")}
 }
 
 func (durationConverter) Unmarshal(value string, field reflect.Value) error {
@@ -91,7 +91,7 @@ func (ipConverter) Marshal(value reflect.Value) (string, error) {
 		}
 		return ip.String(), nil
 	}
-	return "", &EncodingError{Err: errors.New("anyform: value is not net.IP")}
+	return "", &EncodingError{Err: errors.New("goform: value is not net.IP")}
 }
 
 func (ipConverter) Unmarshal(value string, field reflect.Value) error {
@@ -117,7 +117,7 @@ func (urlConverter) Marshal(value reflect.Value) (string, error) {
 	if u, ok := value.Interface().(url.URL); ok {
 		return u.String(), nil
 	}
-	return "", &EncodingError{Err: errors.New("anyform: value is not url.URL")}
+	return "", &EncodingError{Err: errors.New("goform: value is not url.URL")}
 }
 
 func (urlConverter) Unmarshal(value string, field reflect.Value) error {

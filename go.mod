@@ -1,3 +1,3 @@
-module github.com/elsharaky/anyform
+module github.com/elsharaky/goform
 
 go 1.22

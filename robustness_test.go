@@ -1,4 +1,4 @@
-package anyform
+package goform
 
 import (
 	"errors"
@@ -6,45 +6,12 @@ import (
 	"testing"
 )
 
-func TestWithZeroEmptyOmitsZeroValues(t *testing.T) {
-	type z struct {
-		Name  string  `form:"name"`
-		Age   int     `form:"age"`
-		Score float64 `form:"score"`
-	}
-
-	// Default: zero values are emitted.
-	vals, err := NewEncoder().Marshal(z{Name: "x"})
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	if vals.Get("age") != "0" || vals.Get("score") != "0" {
-		t.Errorf("default: expected zero values emitted, got %v", vals)
-	}
-
-	// WithZeroEmpty: zero values omitted, provided values kept.
-	enc := NewEncoder(WithZeroEmpty(true))
-	vals, err = enc.Marshal(z{Name: "x", Age: 7})
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	if vals.Get("age") != "7" {
-		t.Errorf("age = %q, want 7", vals.Get("age"))
-	}
-	if _, ok := vals["score"]; ok {
-		t.Errorf("expected score omitted, got %v", vals)
-	}
-	if vals.Get("name") != "x" {
-		t.Errorf("name = %q, want x", vals.Get("name"))
-	}
-}
-
 type node struct {
 	Name  string `form:"name"`
 	Child *node  `form:"child"`
 }
 
-func TestCircularReferenceReturnsMaxDepthError(t *testing.T) {
+func TestRobustness_CircularReferenceMaxDepthError(t *testing.T) {
 	n := &node{Name: "root"}
 	n.Child = n // self-cycle
 
@@ -58,7 +25,7 @@ func TestCircularReferenceReturnsMaxDepthError(t *testing.T) {
 	}
 }
 
-func TestCircularReferenceScanForFilesDoesNotHang(t *testing.T) {
+func TestRobustness_CircularReferenceScanForFilesDoesNotHang(t *testing.T) {
 	n := &node{Name: "root"}
 	n.Child = n
 
@@ -86,7 +53,7 @@ type scanPayload struct {
 	Second scanWrapper
 }
 
-func TestScanForFiles_RechecksSiblingInterfaceFields(t *testing.T) {
+func TestRobustness_ScanForFilesRechecksSiblingInterfaceFields(t *testing.T) {
 	p := scanPayload{
 		First:  scanWrapper{Data: "just a string"},
 		Second: scanWrapper{Data: File{Content: []byte("x"), Filename: "f.bin"}},
@@ -103,7 +70,7 @@ func TestScanForFiles_RechecksSiblingInterfaceFields(t *testing.T) {
 	}
 }
 
-func TestEncoderDecoderThreadSafety(t *testing.T) {
+func TestRobustness_ConcurrentEncoderDecoder(t *testing.T) {
 	enc := NewEncoder()
 	dec := NewDecoder()
 
@@ -134,7 +101,7 @@ func TestEncoderDecoderThreadSafety(t *testing.T) {
 	wg.Wait()
 }
 
-func TestTopLevelMarshalUnmarshalConcurrent(t *testing.T) {
+func TestRobustness_ConcurrentTopLevelMarshalUnmarshal(t *testing.T) {
 	type u struct {
 		Name string `form:"name"`
 	}

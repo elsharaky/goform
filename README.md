@@ -1,22 +1,22 @@
-# anyform
+# goform
 
 Seamless, tag-driven marshalling and unmarshalling of Go structs to and from
 form data, URL-encoded values, and multipart form data — with file uploads,
 a configurable tag-priority system, and comprehensive type support.
 
-`anyform` is a drop-in replacement for form libraries like
+`goform` is a drop-in replacement for form libraries like
 [`gorilla/schema`](https://github.com/gorilla/schema) and
 [`go-playground/form`](https://github.com/go-playground/form), filling the gaps
 those libraries leave behind.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/elsharaky/anyform.svg)](https://pkg.go.dev/github.com/elsharaky/anyform)
-[![Go Report Card](https://goreportcard.com/badge/github.com/elsharaky/anyform)](https://goreportcard.com/report/github.com/elsharaky/anyform)
-[![CI](https://github.com/elsharaky/anyform/actions/workflows/ci.yml/badge.svg)](https://github.com/elsharaky/anyform/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/elsharaky/goform.svg)](https://pkg.go.dev/github.com/elsharaky/goform)
+[![Go Report Card](https://goreportcard.com/badge/github.com/elsharaky/goform)](https://goreportcard.com/report/github.com/elsharaky/goform)
+[![CI](https://github.com/elsharaky/goform/actions/workflows/ci.yml/badge.svg)](https://github.com/elsharaky/goform/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Features
 
-- **One-line, unified API** — `anyform.Marshal` / `anyform.Unmarshal` handle
+- **One-line, unified API** — `goform.Marshal` / `goform.Unmarshal` handle
   url-encoded and multipart bodies automatically (body + Content-Type in,
   struct out), no format plumbing required.
 - **Seamless marshal + unmarshal** — structs to `url.Values` / multipart bodies
@@ -33,11 +33,11 @@ those libraries leave behind.
 - **Zero external dependencies.**
 - **Thread-safe** — both the unified functions and `Encoder`/`Decoder`.
 
-## Why anyform?
+## Why goform?
 
 Competing libraries are missing key functionality:
 
-| Feature | gorilla/schema | go-playground/form | **anyform** |
+| Feature | gorilla/schema | go-playground/form | **goform** |
 |---|---|---|---|
 | Marshal + Unmarshal | ✅ | ✅ | ✅ |
 | Tag priority system | ❌ | ❌ | **✅** |
@@ -53,7 +53,7 @@ Competing libraries are missing key functionality:
 ## Installation
 
 ```bash
-go get github.com/elsharaky/anyform
+go get github.com/elsharaky/goform
 ```
 
 ## Documentation
@@ -63,7 +63,7 @@ go get github.com/elsharaky/anyform
 - **[Maintainer tutorial](docs/MAINTAINER.md)** — architecture, internals, and
   how to extend the package.
 - **[Mind map](docs/MINDMAP.md)** — visual overview of the whole package.
-- `go doc github.com/elsharaky/anyform` — full API reference.
+- `go doc github.com/elsharaky/goform` — full API reference.
 
 ## Quick Start
 
@@ -75,7 +75,7 @@ the struct contains `File` fields, url-encoded otherwise. `Unmarshal` decodes a
 body back into a struct, detecting the format from `Content-Type`.
 
 ```go
-import "github.com/elsharaky/anyform"
+import "github.com/elsharaky/goform"
 
 type User struct {
     Name  string `form:"name"`
@@ -84,12 +84,12 @@ type User struct {
 }
 
 // Marshal: struct -> []byte body + Content-Type
-body, ct, err := anyform.Marshal(User{Name: "Alice", Email: "alice@example.com", Age: 30})
+body, ct, err := goform.Marshal(User{Name: "Alice", Email: "alice@example.com", Age: 30})
 //   no File fields -> ct == "application/x-www-form-urlencoded"
 
 // Unmarshal: []byte body + Content-Type -> struct
 var user User
-err := anyform.Unmarshal(body, ct, &user)
+err := goform.Unmarshal(body, ct, &user)
 ```
 
 Both functions accept functional options for a single call, and are safe to
@@ -100,11 +100,11 @@ call from any goroutine (no shared state).
 For reusable, pre-configured instances, use the `Encoder` / `Decoder` API:
 
 ```go
-enc := anyform.NewEncoder(anyform.WithTimeLayout(time.RFC3339), anyform.WithStrictUnmarshal(true))
+enc := goform.NewEncoder(goform.WithTimeLayout(time.RFC3339), goform.WithStrictUnmarshal(true))
 vals, err := enc.Marshal(user)             // -> url.Values
 body, ct, err := enc.MarshalMultipart(v)   // -> multipart (explicit)
 
-dec := anyform.NewDecoder()
+dec := goform.NewDecoder()
 err := dec.Unmarshal(vals, &v)                        // from url.Values
 err := dec.UnmarshalMultipart(req, &v)                // from *http.Request
 err := dec.UnmarshalMultipartForm(form, &v)           // from *multipart.Form
@@ -131,7 +131,7 @@ type Product struct {
 Override it per-encoder:
 
 ```go
-enc := anyform.NewEncoder(anyform.WithTagPriority("json", "form", "protobuf"))
+enc := goform.NewEncoder(goform.WithTagPriority("json", "form", "protobuf"))
 ```
 
 During **unmarshalling**, whichever key the client sends is matched against
@@ -139,7 +139,7 @@ all tag names, so any supported tag name works as the submitted key.
 
 ## The `File` type
 
-`anyform.File` carries everything about an uploaded file:
+`goform.File` carries everything about an uploaded file:
 
 ```go
 type File struct {
@@ -152,16 +152,16 @@ type File struct {
 ```go
 type Upload struct {
     Title  string         `form:"title"`
-    Avatar anyform.File   `form:"avatar"`   // single file
-    Docs   []anyform.File `form:"documents"` // multiple files
+    Avatar goform.File   `form:"avatar"`   // single file
+    Docs   []goform.File `form:"documents"` // multiple files
 }
 
-// Marshal: anyform detects the File fields and produces multipart/form-data
-body, contentType, err := anyform.Marshal(upload)
+// Marshal: goform detects the File fields and produces multipart/form-data
+body, contentType, err := goform.Marshal(upload)
 
-// Unmarshal: anyform detects multipart from the Content-Type and populates
+// Unmarshal: goform detects multipart from the Content-Type and populates
 // File/[]File fields — no net/http dependency, no manual ParseMultipartForm.
-err := anyform.Unmarshal(body, contentType, &upload)
+err := goform.Unmarshal(body, contentType, &upload)
 ```
 
 `File` is decoupled from `net/http`, so it works in handlers, tests, gRPC,
@@ -182,7 +182,7 @@ always round-trips.
 
 > **Root value:** the value passed to `Marshal` / `Unmarshal` (and to
 > `Encoder`/`Decoder`) must be a **struct** (or a pointer to a struct) — the
-> same contract `encoding/json` has for the destination, but `anyform` keeps it
+> same contract `encoding/json` has for the destination, but `goform` keeps it
 > for **both** directions. Slices, arrays, maps, and primitives are supported
 > only as *field values*, because every form key names a field: a bare root
 > slice would have no namespace to attach its keys to.
@@ -241,7 +241,7 @@ type Order struct {
     Discount map[string]string `form:"discount"`
 }
 
-body, ct, _ := anyform.Marshal(Order{
+body, ct, _ := goform.Marshal(Order{
     ID:       42,
     ShipTo:   Address{City: "Lyon", ZIP: "69001"},
     Lines:    []string{"A", "B"},
@@ -250,7 +250,7 @@ body, ct, _ := anyform.Marshal(Order{
 // body: discount%5Bcode%5D=SAVE10&id=42&line%5B0%5D=A&line%5B1%5D=B&ship_to.city=Lyon&ship_to.zip=69001
 
 var got Order
-anyform.Unmarshal(body, ct, &got) // reconstructs all nested fields
+goform.Unmarshal(body, ct, &got) // reconstructs all nested fields
 ```
 
 ### Marshaller semantics
@@ -296,7 +296,7 @@ anyform.Unmarshal(body, ct, &got) // reconstructs all nested fields
 
 ### Server hardening
 
-`anyform` reads bodies and file content into memory, and by default imposes no
+`goform` reads bodies and file content into memory, and by default imposes no
 size limits. For untrusted uploads the strongest protection stops oversized
 requests **before** any parsing — wrap the request body in
 [`http.MaxBytesReader`](https://pkg.go.dev/net/http#MaxBytesReader), then use
@@ -310,11 +310,11 @@ if err != nil {
     // e.g. 413 Payload Too Large
 }
 var up Upload
-err = anyform.NewDecoder(
-    anyform.WithMaxBodySize(10<<20),
-    anyform.WithMaxFileSize(5<<20), // each file ≤ 5 MiB
+err = goform.NewDecoder(
+    goform.WithMaxBodySize(10<<20),
+    goform.WithMaxFileSize(5<<20), // each file ≤ 5 MiB
 ).UnmarshalMultipartForm(form, &up)
-if errors.Is(err, anyform.ErrFileTooLarge) {
+if errors.Is(err, goform.ErrFileTooLarge) {
     // 413 Payload Too Large
 }
 ```
@@ -353,7 +353,7 @@ type statusConverter struct{}
 func (statusConverter) Marshal(v reflect.Value) (string, error) { /* ... */ }
 func (statusConverter) Unmarshal(s string, f reflect.Value) error { /* ... */ }
 
-enc := anyform.NewEncoder(anyform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}))
+enc := goform.NewEncoder(goform.WithCustomConverter(reflect.TypeOf(Status(0)), statusConverter{}))
 ```
 
 ## Tag options

@@ -1,7 +1,7 @@
-// Package anyform provides seamless marshalling and unmarshalling of Go structs
+// Package goform provides seamless marshalling and unmarshalling of Go structs
 // to and from HTML form data, URL-encoded values, and multipart form data.
 //
-// Unlike existing form packages, anyform supports:
+// Unlike existing form packages, goform supports:
 //   - A configurable tag priority system (form > json > xml > protobuf)
 //   - Native file upload handling via the [File] type
 //   - All Go types as field values, including maps, nested structs, slices,
@@ -22,11 +22,11 @@
 //	    Email string `form:"email"`
 //	}
 //
-//	body, ct, err := anyform.Marshal(User{Name: "Alice", Email: "alice@example.com"})
+//	body, ct, err := goform.Marshal(User{Name: "Alice", Email: "alice@example.com"})
 //	// body == "email=alice%40example.com&name=Alice", ct == "application/x-www-form-urlencoded"
 //
 //	var user User
-//	err := anyform.Unmarshal(body, ct, &user)
+//	err := goform.Unmarshal(body, ct, &user)
 //
 // # Encoder / Decoder
 //
@@ -37,7 +37,7 @@
 //
 // # Tag Priority
 //
-// anyform resolves struct field names using a configurable tag priority.
+// goform resolves struct field names using a configurable tag priority.
 // The default order is: form > json > xml > protobuf. If a tag is not found,
 // the exported Go field name is used as a fallback.
 //
@@ -65,8 +65,8 @@
 // Fields of type [File] or [File] are populated from multipart form data:
 //
 //	type Upload struct {
-//	    Avatar anyform.File   `form:"avatar"`
-//	    Docs   anyform.Files  `form:"documents"`
+//	    Avatar goform.File   `form:"avatar"`
+//	    Docs   goform.Files  `form:"documents"`
 //	}
 //
 // File parts are routed through the struct exactly like value keys: a part
@@ -159,4 +159,4 @@
 //     priority list, not just the primary form name. This applies to value
 //     fields AND File/[]File fields: a file part named by any of the field's
 //     tags is accepted.
-package anyform
+package goform

@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a bug in anyform
+about: Report a bug in goform
 title: '[BUG] '
 labels: bug
 assignees: ''
@@ -24,7 +24,7 @@ What actually happened (include error messages or output).
 
 **Environment**
 - Go version: (e.g. `go version`)
-- anyform version: (e.g. `v0.1.0` or commit SHA)
+- goform version: (e.g. `v0.1.0` or commit SHA)
 - OS: (e.g. Linux/macOS/Windows)
 
 **Additional context**

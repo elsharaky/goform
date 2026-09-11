@@ -1,6 +1,6 @@
-# Contributing to anyform
+# Contributing to goform
 
-Thanks for your interest in contributing! `anyform` is an open-source project,
+Thanks for your interest in contributing! `goform` is an open-source project,
 but it is **maintainer-owned**: only the maintainer and collaborators chosen by
 the maintainer can merge changes. Everyone else contributes by opening issues
 and pull requests, which the maintainers review and decide on.
@@ -60,7 +60,7 @@ Example: `feat: add support for custom tag priority`
 
 ## Versioning & releases
 
-- `anyform` follows [Semantic Versioning](https://semver.org/).
+- `goform` follows [Semantic Versioning](https://semver.org/).
 - Releases are created automatically when a PR is merged into `main`: the
   [Version workflow](.github/workflows/main.yml) runs semantic-release, which
   computes the next version from Conventional Commits, tags the commit
