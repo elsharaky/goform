@@ -3,6 +3,7 @@ package anyform
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/url"
 	"reflect"
@@ -974,5 +975,279 @@ func TestEncoder_Marshal_ZeroTimeOmittedWithOmitEmpty(t *testing.T) {
 	}
 	if vals.Has("when") {
 		t.Errorf("zero time should be omitted under WithZeroEmpty, got %v", vals)
+	}
+}
+
+// === Round-3 review regressions ===
+
+// roundTxtCode is a string-kind type implementing TextMarshaler/TextUnmarshaler.
+// Before the round-3 fix the encoder skipped string-kind TextMarshalers, so the
+// encoded value leaked raw while decoding still dispatched to UnmarshalText
+// (#11).
+type roundTxtCode string
+
+func (c roundTxtCode) MarshalText() ([]byte, error) {
+	return []byte("code:" + string(c)), nil
+}
+
+func (c *roundTxtCode) UnmarshalText(b []byte) error {
+	*c = roundTxtCode(strings.TrimPrefix(string(b), "code:"))
+	return nil
+}
+
+func TestEncoderDecoder_StringKindTextMarshalerSymmetric(t *testing.T) {
+	type s struct {
+		Code roundTxtCode `form:"code"`
+	}
+	in := s{Code: roundTxtCode("abc")}
+	vals, err := NewEncoder().Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if got := vals.Get("code"); got != "code:abc" {
+		t.Errorf("marshal = %q, want TextMarshaler output %q", got, "code:abc")
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if out.Code != "abc" {
+		t.Errorf("Code = %q, want %q", out.Code, "abc")
+	}
+}
+
+// txtPoint is a struct-kind type implementing TextMarshaler/TextUnmarshaler.
+// The encoder emits "X,Y" but the decoder used to ignore it because a struct
+// leaf has nowhere to store a scalar (#9/#11) — silent data loss.
+type txtPoint struct {
+	X, Y int
+}
+
+func (p txtPoint) MarshalText() ([]byte, error) {
+	return []byte(fmt.Sprintf("%d,%d", p.X, p.Y)), nil
+}
+
+func (p *txtPoint) UnmarshalText(b []byte) error {
+	_, err := fmt.Sscanf(string(b), "%d,%d", &p.X, &p.Y)
+	return err
+}
+
+// mutRefA and mutRefB are mutually-recursive pointer types used to reproduce
+// the buildUnmarshalIndex stack overflow before the round-3 cycle guard (#2).
+type mutRefB struct {
+	*mutRefA
+	BVal string `form:"bval"`
+}
+
+type mutRefA struct {
+	*mutRefB
+	AVal string `form:"aval"`
+}
+
+func TestEncoderDecoder_StructKindTextMarshalerSymmetric(t *testing.T) {
+	type s struct {
+		Loc txtPoint `form:"loc"`
+	}
+	in := s{Loc: txtPoint{X: 3, Y: 4}}
+	vals, err := NewEncoder().Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if got := vals.Get("loc"); got != "3,4" {
+		t.Errorf("marshal = %q, want %q", got, "3,4")
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if out.Loc != (txtPoint{X: 3, Y: 4}) {
+		t.Errorf("Loc = %+v, want {3 4}", out.Loc)
+	}
+}
+
+func TestEncoderDecoder_MultipartTextMarshalerRoundTrip(t *testing.T) {
+	enc := NewEncoder()
+	body, ct, err := enc.MarshalMultipart(struct {
+		Code roundTxtCode `form:"code"`
+		Loc  txtPoint     `form:"loc"`
+	}{Code: "abc", Loc: txtPoint{X: 5, Y: 6}})
+	if err != nil {
+		t.Fatalf("marshal multipart error: %v", err)
+	}
+	if !bytes.Contains(body, []byte("code:abc")) || !bytes.Contains(body, []byte("5,6")) {
+		t.Errorf("multipart body missing TextMarshaler output:\n%s", body)
+	}
+	var out struct {
+		Code roundTxtCode `form:"code"`
+		Loc  txtPoint     `form:"loc"`
+	}
+	if err := Unmarshal(body, ct, &out); err != nil {
+		t.Fatalf("unmarshal multipart error: %v", err)
+	}
+	if out.Code != "abc" || out.Loc != (txtPoint{X: 5, Y: 6}) {
+		t.Errorf("round trip = %+v/%+v", out.Code, out.Loc)
+	}
+}
+
+// #2: "type T struct{ *T }" used to blow the buildUnmarshalIndex stack.
+func TestDecoder_Unmarshal_SelfEmbeddedPointer(t *testing.T) {
+	type T struct {
+		*T
+		Name string `form:"name"`
+	}
+	var out T
+	if err := NewDecoder().Unmarshal(url.Values{"name": {"x"}}, &out); err != nil {
+		t.Fatalf("unmarshal of self-embedded type: %v", err)
+	}
+	if out.Name != "x" {
+		t.Errorf("Name = %q, want %q", out.Name, "x")
+	}
+}
+
+func TestDecoder_Unmarshal_MutuallySelfEmbedded(t *testing.T) {
+	var out mutRefA
+	if err := NewDecoder().Unmarshal(url.Values{"aval": {"a"}}, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.AVal != "a" {
+		t.Errorf("AVal = %q, want %q", out.AVal, "a")
+	}
+}
+
+// #3: a dotted key against a slice used to re-dispatch into the leaf,
+// silently appending data ("lines.evil=x" added "x" to []string).
+func TestDecoder_Unmarshal_DotKeyOnSliceNotInjected(t *testing.T) {
+	type s struct {
+		Lines []string `form:"lines"`
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(url.Values{"lines.evil": {"injected"}}, &out); err != nil {
+		t.Fatalf("lenient unmarshal: %v", err)
+	}
+	if len(out.Lines) != 0 {
+		t.Errorf("Lines = %v, want empty (injection through dotted key)", out.Lines)
+	}
+	if err := NewDecoder(WithStrictUnmarshal(true)).Unmarshal(url.Values{"lines.evil": {"injected"}}, &out); err == nil {
+		t.Error("strict unmarshal: expected error for dotted key on a slice")
+	}
+}
+
+func TestDecoder_Unmarshal_DotKeyOnArrayNotOverwritten(t *testing.T) {
+	type s struct {
+		Items [3]int `form:"items"`
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(url.Values{"items.evil": {"99"}}, &out); err != nil {
+		t.Fatalf("lenient unmarshal: %v", err)
+	}
+	if out.Items[0] != 0 {
+		t.Errorf("Items[0] = %d, want 0 (overwritten through dotted key)", out.Items[0])
+	}
+}
+
+func TestDecoder_Unmarshal_DotKeyOnMapRejected(t *testing.T) {
+	type s struct {
+		Attr map[string]string `form:"attr"`
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(url.Values{"attr.evil": {"x"}}, &out); err != nil {
+		t.Fatalf("lenient unmarshal: %v", err)
+	}
+	if len(out.Attr) != 0 {
+		t.Errorf("Attr = %v, want empty", out.Attr)
+	}
+	if err := NewDecoder(WithStrictUnmarshal(true)).Unmarshal(url.Values{"attr.evil": {"x"}}, &out); err == nil {
+		t.Error("strict unmarshal: expected error for dotted key on a map")
+	}
+}
+
+// #4: integer struct tags forced map[string]int keys; values were previously
+// dropped because the parser treated "123"/"-1" as dot tokens.
+func TestEncoderDecoder_NumericKeyMapRoundTrip(t *testing.T) {
+	type s struct {
+		Nums map[string]int `form:"nums"`
+	}
+	in := s{Nums: map[string]int{"123": 5, "-1": 6}}
+	vals, err := NewEncoder().Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(out.Nums) != 2 || out.Nums["123"] != 5 || out.Nums["-1"] != 6 {
+		t.Errorf("Nums = %v, want {123:5 -1:6}", out.Nums)
+	}
+}
+
+func TestDecoder_Unmarshal_NumericKeyIntMap(t *testing.T) {
+	type s struct {
+		M map[int]string `form:"m"`
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(url.Values{"m[7]": {"x"}}, &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if out.M[7] != "x" {
+		t.Errorf("M = %v, want map[7:x]", out.M)
+	}
+}
+
+// #7: []byte is meant to be a single raw value, not a []byte of numeric bytes.
+func TestEncoderDecoder_BytesSingleValue(t *testing.T) {
+	type s struct {
+		Data []byte `form:"data"`
+	}
+	in := s{Data: []byte("hello\x00world")}
+	vals, err := NewEncoder().Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if got := vals.Get("data"); got != "hello\x00world" {
+		t.Errorf("marshal = %q, want single raw value", got)
+	}
+	var out s
+	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !bytes.Equal(out.Data, in.Data) {
+		t.Errorf("round trip = %q, want %q", out.Data, in.Data)
+	}
+
+	var single s
+	if err := NewDecoder().Unmarshal(url.Values{"data": {"hi"}}, &single); err != nil {
+		t.Fatalf("single-value unmarshal: %v", err)
+	}
+	if string(single.Data) != "hi" {
+		t.Errorf("Data = %q, want %q", single.Data, "hi")
+	}
+
+	// indexed numeric form must keep working
+	var idx s
+	if err := NewDecoder().Unmarshal(url.Values{"data[0]": {"72"}}, &idx); err != nil {
+		t.Fatalf("indexed unmarshal: %v", err)
+	}
+	if string(idx.Data) != "H" {
+		t.Errorf("Data = %q, want %q", idx.Data, "H")
+	}
+}
+
+// #9: "map[string]Struct" with "m[k]=v" used to silently insert a zero struct.
+func TestDecoder_Unmarshal_MapScalarToStructErrors(t *testing.T) {
+	type item struct {
+		Label string `form:"label"`
+	}
+	type s struct {
+		Items map[string]item `form:"items"`
+	}
+	var out s
+	err := NewDecoder().Unmarshal(url.Values{"items[first]": {"v"}}, &out)
+	var de *DecodingError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected DecodingError, got %v", err)
+	}
+	if len(out.Items) != 0 {
+		t.Errorf("Items = %+v; scalar must not create a zero entry", out.Items)
 	}
 }

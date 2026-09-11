@@ -226,15 +226,39 @@ func (r *tagResolver) buildUnmarshalIndex(t reflect.Type) unmarshalIndex {
 		return idx
 	}
 
-	index := r.buildUnmarshalIndexUncached(t)
+	// The ancestor set prevents unbounded recursion on self-referential
+	// embedded types (e.g. "type T struct { *T }"): while building T's index,
+	// a nested embed of T is skipped instead of re-build the same type forever.
+	// Only the top-level call stores into the cache, so a type that was skipped
+	// through an ancestor (losing that parent's promoted fields) is still built
+	// correctly when requested on its own.
+	building := map[reflect.Type]bool{t: true}
+	index := r.buildUnmarshalIndexUncached(t, building)
 	actual, _ := unmarshalIndexCache.LoadOrStore(key, index)
 	idx, _ = actual.(unmarshalIndex)
 	return idx
 }
 
+// buildIndexWithBuilding builds (or returns from the shared cache) the index
+// for an embedded type, sharing the caller's ancestor set so self-referential
+// embeds terminate. The result is deliberately NOT stored in the cache: an
+// index built behind an ancestor may legitimately omit that ancestor's
+// promoted fields and must not shadow a later, complete top-level build.
+func (r *tagResolver) buildIndexWithBuilding(t reflect.Type, building map[reflect.Type]bool) unmarshalIndex {
+	key := unmarshalIndexKey{t: t, priority: strings.Join(r.priority, ",")}
+	if cached, ok := unmarshalIndexCache.Load(key); ok {
+		if idx, ok := cached.(unmarshalIndex); ok {
+			return idx
+		}
+	}
+	return r.buildUnmarshalIndexUncached(t, building)
+}
+
 // buildUnmarshalIndexUncached performs the actual reflection walk. Callers
 // should use buildUnmarshalIndex, which caches the result per struct type.
-func (r *tagResolver) buildUnmarshalIndexUncached(t reflect.Type) unmarshalIndex {
+// The building set tracks the types currently being built on the recursion
+// path; embedding a type already in the set is a cycle and is skipped.
+func (r *tagResolver) buildUnmarshalIndexUncached(t reflect.Type, building map[reflect.Type]bool) unmarshalIndex {
 	fields := make(map[string]reflect.StructField)
 	ambiguous := make(map[string]bool)
 
@@ -253,9 +277,15 @@ func (r *tagResolver) buildUnmarshalIndexUncached(t reflect.Type) unmarshalIndex
 
 		// Flatten anonymous embedded structs into the parent namespace.
 		// Handle before the export check because anonymous fields use the
-		// (possibly lowercase) type name.
+		// (possibly lowercase) type name. A cycle (an embed that appears again
+		// on this build path) is skipped to avoid unbounded recursion.
 		if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
-			inner := r.buildUnmarshalIndex(sf.Type)
+			if building[sf.Type] {
+				continue
+			}
+			building[sf.Type] = true
+			inner := r.buildIndexWithBuilding(sf.Type, building)
+			delete(building, sf.Type)
 			flattenIndex(inner, sf.Index, register, ambiguous)
 			continue
 		}
@@ -269,7 +299,13 @@ func (r *tagResolver) buildUnmarshalIndexUncached(t reflect.Type) unmarshalIndex
 		if sf.Anonymous && sf.IsExported() && sf.Type.Kind() == reflect.Pointer &&
 			sf.Type.Elem().Kind() == reflect.Struct &&
 			sf.Type.Elem() != reflect.TypeOf(File{}) {
-			inner := r.buildUnmarshalIndex(sf.Type.Elem())
+			elem := sf.Type.Elem()
+			if building[elem] {
+				continue
+			}
+			building[elem] = true
+			inner := r.buildIndexWithBuilding(elem, building)
+			delete(building, elem)
 			flattenIndex(inner, sf.Index, register, ambiguous)
 			r.registerFieldNames(sf, register)
 			continue
