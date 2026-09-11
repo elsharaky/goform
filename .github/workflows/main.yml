@@ -1,10 +1,12 @@
 name: Version
 
-# On every push/merge to `main`, bump the semantic version based on the
-# commit message(s) (Conventional Commits), tag main with vX.Y.Z, and
-# publish the GitHub Release — all handled by semantic-release per .releaserc.
+# Only trigger when a pull request is merged into `main` (no release on bare
+# pushes). On merge, bump the semantic version based on the merged commit
+# message(s) (Conventional Commits), tag main with vX.Y.Z, and publish the
+# GitHub Release — all handled by semantic-release per .releaserc.
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches: [main]
 
 permissions:
@@ -13,11 +15,14 @@ permissions:
 jobs:
   release:
     name: Semantic Release
+    if: github.repository == 'elsharaky/goform' && github.event.pull_request.merged == true && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    if: github.repository == 'elsharaky/goform' && github.actor != 'github-actions[bot]'
     steps:
+      # Check out the merged state of `main` (not the PR head) so release
+      # analysis runs against the code that actually landed.
       - uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-go@v7
@@ -29,8 +34,9 @@ jobs:
         run: go test -race ./...
 
       # Reads .releaserc (commit-analyzer, release-notes-generator, github):
-      # analyzes Conventional Commits since the last tag, generates structured
-      # release notes, tags main with vX.Y.Z, and publishes the GitHub Release.
+      # analyzes Conventional Commits since the last tag. If the merged PR
+      # carries release-triggering commits (feat/fix/BREAKING), tags main with
+      # vX.Y.Z and publishes the GitHub Release; otherwise it exits quietly.
       #
       # .releaserc uses the `conventionalcommits` preset, which lives in
       # `conventional-changelog-conventionalcommits`. semantic-release v24 has
