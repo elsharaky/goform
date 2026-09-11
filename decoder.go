@@ -233,6 +233,15 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 
 	// Dereference pointers as we descend.
 	if field.Kind() == reflect.Pointer {
+		// A value part routed to a *File / *[]File field is an untouched
+		// browser file input (no filename). Skip it BEFORE allocating the
+		// pointed-to value: unlike ordinary pointer autovivification there is
+		// nothing to assign — file fields are only populated from real file
+		// parts — so leave the pointer nil instead of a zero File.
+		if field.Type().Elem() == reflect.TypeOf(File{}) ||
+			field.Type().Elem() == reflect.TypeOf([]File{}) {
+			return nil
+		}
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
 		}
@@ -279,10 +288,25 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 			childVal := fieldByIndexAlloc(field, child.Index)
 			return d.decodePath(childVal, tail, vals, depth+1, path+"."+head.name)
 		case reflect.Slice, reflect.Array:
-			// slice of struct accessed without index (rare) — treat as append
-			return d.decodePath(field, tail, vals, depth+1, path+"."+head.name)
+			// A dotted key on a container is never produced by any encoder,
+			// which addresses elements only as "slice[i]". Previously this
+			// re-dispatched to the leaf and silently APPENDED the submitted
+			// value to the slice while discarding the segment name — so a key
+			// like "lines.evil" wrote attacker data into the lines field and
+			// slipped past strict mode. Treat it as a structural mismatch like
+			// any other: ignored in non-strict mode, rejected in strict mode.
+			if d.cfg.strict {
+				return &DecodingError{FieldPath: head.name,
+					Err: errors.New("cannot descend into slice/array without an index")}
+			}
+			return nil
 		case reflect.Map:
-			// map accessed via .field — not supported; skip
+			// "map.field" (unbracketed) is likewise never produced by the
+			// encoder, which uses "map[key]" exclusively.
+			if d.cfg.strict {
+				return &DecodingError{FieldPath: head.name,
+					Err: errors.New("cannot descend into map without bracket notation")}
+			}
 			return nil
 		default:
 			if d.cfg.strict {
@@ -292,6 +316,15 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 		}
 
 	case "index":
+		// A "[123]" token on a Map is a string map key, not an index: the
+		// encoder renders numeric-keyed maps as "m[123]"/"m[-1]" (parseKeyPath
+		// classifies every numeric bracket as an index). Routing it through the
+		// map-key path makes numeric-keyed maps round-trip instead of being
+		// silently dropped.
+		if field.Kind() == reflect.Map {
+			return d.consumeMapKey(field, head.name, tail, vals, depth, path)
+		}
+
 		if field.Kind() != reflect.Slice && field.Kind() != reflect.Array {
 			if d.cfg.strict {
 				return &DecodingError{FieldPath: head.name, Err: errors.New("index on non-indexable field")}
@@ -336,41 +369,52 @@ func (d *Decoder) decodePath(field reflect.Value, rest []keyToken, vals []string
 			}
 			return nil
 		}
-		if field.IsNil() {
-			field.Set(reflect.MakeMap(field.Type()))
-		}
-		mapKey := reflect.New(field.Type().Key()).Elem()
-		if err := d.assignScalarTo(mapKey, head.name); err != nil {
-			return &DecodingError{FieldPath: head.name, Err: err}
-		}
-
-		if len(tail) == 0 {
-			// Leaf map value.
-			val := reflect.New(field.Type().Elem()).Elem()
-			if err := d.assignLeaf(val, vals); err != nil {
-				return &DecodingError{FieldPath: head.name, Err: err}
-			}
-			field.SetMapIndex(mapKey, val)
-			return nil
-		}
-
-		// Map value is complex (struct/slice); descending requires a settable
-		// value. Start from an existing entry so distinct keys targeting the
-		// same element ("m[k].name", "m[k].age", or a file part "m[k].bin")
-		// merge instead of overwriting one another, then write the result back.
-		val := reflect.New(field.Type().Elem()).Elem()
-		if existing := field.MapIndex(mapKey); existing.IsValid() {
-			val.Set(existing)
-		}
-		if err := d.decodePath(val, tail, vals, depth+1, path); err != nil {
-			return &DecodingError{FieldPath: head.name, Err: err}
-		}
-		field.SetMapIndex(mapKey, val)
-		return nil
+		return d.consumeMapKey(field, head.name, tail, vals, depth, path)
 
 	default:
 		return &DecodingError{FieldPath: head.name, Err: errors.New("unknown key token")}
 	}
+}
+
+// consumeMapKey resolves one bracket token against a Map field: it parses the
+// key, then either assigns a leaf value directly to the mapped element or
+// descends into the element so distinct keys targeting the same entry merge.
+// It is shared by "[key]" tokens and numeric "[i]" tokens on a map (the latter
+// being string keys of numerically-keyed maps).
+func (d *Decoder) consumeMapKey(field reflect.Value, rawKey string, tail []keyToken, vals []string, depth int, path string) error {
+	if field.IsNil() {
+		field.Set(reflect.MakeMap(field.Type()))
+	}
+	mapKey := reflect.New(field.Type().Key()).Elem()
+	if err := d.assignScalarTo(mapKey, rawKey); err != nil {
+		return &DecodingError{FieldPath: rawKey, Err: err}
+	}
+
+	if len(tail) == 0 {
+		// Leaf map value. A scalar targeting a struct element (or anything
+		// else that cannot consume a leaf) surfaces as an error via
+		// assignLeaf instead of silently inserting a zero value.
+		val := reflect.New(field.Type().Elem()).Elem()
+		if err := d.assignLeaf(val, vals); err != nil {
+			return &DecodingError{FieldPath: rawKey, Err: err}
+		}
+		field.SetMapIndex(mapKey, val)
+		return nil
+	}
+
+	// Map value is complex (struct/slice); descending requires a settable
+	// value. Start from an existing entry so distinct keys targeting the
+	// same element ("m[k].name", "m[k].age", or a file part "m[k].bin")
+	// merge instead of overwriting one another, then write the result back.
+	val := reflect.New(field.Type().Elem()).Elem()
+	if existing := field.MapIndex(mapKey); existing.IsValid() {
+		val.Set(existing)
+	}
+	if err := d.decodePath(val, tail, vals, depth+1, path); err != nil {
+		return &DecodingError{FieldPath: rawKey, Err: err}
+	}
+	field.SetMapIndex(mapKey, val)
+	return nil
 }
 
 // assignLeaf assigns raw string values to a leaf field of any supported kind.
@@ -394,8 +438,14 @@ func (d *Decoder) assignLeaf(field reflect.Value, vals []string) error {
 
 	switch field.Kind() {
 	case reflect.Struct:
+		// A value part named like a File field is the signature of an
+		// untouched browser file input, whose part carries an empty filename
+		// and is routed by the multipart parser to the value store. Failing
+		// the whole decode for an optional file box that the user left empty
+		// would break an ordinary form. The encoder already skips File fields
+		// without a filename, so parity here is to ignore the stray value part.
 		if field.Type() == reflect.TypeOf(File{}) {
-			return errors.New("cannot decode value part into File field: multipart file parts must include a filename")
+			return nil
 		}
 		if field.Type() == reflect.TypeOf(time.Time{}) {
 			tv := timeConverter{layout: d.cfg.timeLayout}
@@ -404,14 +454,38 @@ func (d *Decoder) assignLeaf(field reflect.Value, vals []string) error {
 			}
 			return nil
 		}
-		// Nested struct as a single value — treat as flattening: ignore extra.
-		return nil
+		// Symmetric with the encoder: a struct leaf that implements
+		// encoding.TextUnmarshaler (and whose encoder text-marshals it) is
+		// decoded through it.
+		if d.cfg.textAware && field.CanAddr() {
+			if tu, ok := field.Addr().Interface().(encoding.TextUnmarshaler); ok {
+				return tu.UnmarshalText([]byte(vals[0]))
+			}
+		}
+		// A lone scalar against a plain struct field is a client error, not
+		// silent data loss: previously the value was discarded and the field
+		// stayed zero, masking mistakes like "m[k]=v" on a map of structs or a
+		// text-marshaled value whose target lacks a TextUnmarshaler.
+		return &DecodingError{FieldPath: "", Err: errors.New("cannot assign scalar value to struct field without nested keys")}
 	case reflect.Slice, reflect.Array:
-		// A value part applied to a File element means the client sent the
-		// part without a filename, so the multipart parser routed it to the
-		// value path. Surface that instead of a raw "unsupported field kind".
-		if field.Type().Elem() == reflect.TypeOf(File{}) {
-			return errors.New("cannot decode value part into []File field: multipart file parts must include a filename")
+		// A value part applied to a []File field is the multi-file analogue of
+		// the untouched file input above; ignore it rather than fail the
+		// decode, mirroring the encoder's skip of empty-filename files.
+		if field.Type() == reflect.TypeOf([]File{}) {
+			return nil
+		}
+		// A raw []byte is a scalar blob, not a slice of numbers: accept the
+		// conventional single-value form ("data=<bytes>") that the encoder
+		// now emits. Explicit "[i]" keys keep working through decodePath's
+		// index branch, which reaches assignScalarTo per element.
+		if field.Type() == reflect.TypeOf([]byte{}) {
+			if len(vals) > 1 {
+				return errors.New("[]byte expects a single value")
+			}
+			if len(vals) == 1 {
+				field.SetBytes([]byte(vals[0]))
+			}
+			return nil
 		}
 		// Repeated key: append each value as new element.
 		if field.Kind() == reflect.Slice {
