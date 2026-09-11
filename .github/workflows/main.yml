@@ -33,6 +33,20 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+      # semantic-release hardcodes the very first release to 1.0.0, but we
+      # want 0.1.0. Seed an annotated v0.0.0 baseline tag on the root commit
+      # only when no release tag exists yet, so the first merged feat/fix
+      # bumps 0.0.0 -> minor 0.1.0 (patch stays below for pre-release fixes).
+      - name: Seed baseline version tag
+        run: |
+          if [ -z "$(git tag --list 'v[0-9]*')" ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            root="$(git rev-list --max-parents=0 HEAD)"
+            git tag -a v0.0.0 "$root" -m 'v0.0.0 baseline before first release'
+            git push origin v0.0.0
+          fi
+
       # Reads .releaserc (commit-analyzer, release-notes-generator, github):
       # analyzes Conventional Commits since the last tag. If the merged PR
       # carries release-triggering commits (feat/fix/BREAKING), tags main with
