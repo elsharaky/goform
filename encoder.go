@@ -215,9 +215,20 @@ func (e *Encoder) encodeField(rv reflect.Value, key string, vals url.Values, dep
 		return nil
 	}
 
-	// Handle configured text marshaler support.
+	// A raw []byte is one scalar blob, not a per-byte slice: emit its text and
+	// keep maps-of-bytes and nested byte fields symmetric with the decoder's
+	// single-value handling.
+	if t == reflect.TypeOf([]byte{}) {
+		vals.Add(key, string(rv.Bytes()))
+		return nil
+	}
+
+	// Handle configured text marshaler support. No kind guard: a type that
+	// implements encoding.TextMarshaler (including defined string kinds) is
+	// encoded through it so encode/decode stay symmetrical with the decoder,
+	// which always honors TextUnmarshaler.
 	if e.cfg.textAware {
-		if tm, ok := rv.Interface().(encoding.TextMarshaler); ok && t.Kind() != reflect.String {
+		if tm, ok := rv.Interface().(encoding.TextMarshaler); ok {
 			b, err := tm.MarshalText()
 			if err != nil {
 				return &EncodingError{FieldPath: key, Err: err}
@@ -422,6 +433,25 @@ func (e *Encoder) encodeFieldMultipart(rv reflect.Value, key string, mw *multipa
 			return writeStringPart(mw, key, s)
 		}
 		return nil
+	}
+
+	// A raw []byte is one scalar blob (see encodeField).
+	if t == reflect.TypeOf([]byte{}) {
+		return writeStringPart(mw, key, string(rv.Bytes()))
+	}
+
+	// Honor encoding.TextMarshaler here too, mirroring the URL path. File and
+	// time.Time are handled above; any other struct kind previously recursed
+	// into its fields instead of marshalling its text, producing a form that
+	// never round-tripped with the decoder's TextUnmarshaler support.
+	if e.cfg.textAware {
+		if tm, ok := rv.Interface().(encoding.TextMarshaler); ok {
+			b, err := tm.MarshalText()
+			if err != nil {
+				return &EncodingError{FieldPath: key, Err: err}
+			}
+			return writeStringPart(mw, key, string(b))
+		}
 	}
 
 	switch rv.Kind() {
