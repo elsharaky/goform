@@ -38,7 +38,7 @@ jobs:
       # external package that must be pre-installed (pinned to the v8 line that
       # is compatible with semantic-release >= 24).
       - name: Semantic Release
-        uses: cycjimmy/semantic-release-action@v4
+        uses: cycjimmy/semantic-release-action@v6
         with:
           extra_plugins: |
             conventional-changelog-conventionalcommits@8.0.0
