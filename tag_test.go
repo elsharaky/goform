@@ -25,7 +25,7 @@ type testPriorityOrder struct {
 	D string
 }
 
-func TestTagResolver_marshalFieldName(t *testing.T) {
+func TestTagResolver_MarshalFieldName(t *testing.T) {
 	r := newTagResolver()
 
 	tests := []struct {
@@ -66,7 +66,7 @@ func TestTagResolver_marshalFieldName(t *testing.T) {
 	}
 }
 
-func TestTagResolver_marshalFieldOptions(t *testing.T) {
+func TestTagResolver_MarshalFieldOptions(t *testing.T) {
 	r := newTagResolver()
 	sf := reflect.TypeOf(testMarshalTags{})
 
@@ -132,7 +132,7 @@ func TestTagResolver_PriorityOrder(t *testing.T) {
 	}
 }
 
-func TestTagResolver_buildUnmarshalIndex(t *testing.T) {
+func TestTagResolver_BuildUnmarshalIndex(t *testing.T) {
 	r := newTagResolver()
 	tp := reflect.TypeOf(testMarshalTags{})
 	idx := r.buildUnmarshalIndex(tp)
@@ -169,7 +169,7 @@ func TestTagResolver_buildUnmarshalIndex(t *testing.T) {
 // the same keys resolve to the same fields, across repeated calls and across
 // different tag priorities (the index registers every non-skip name, so content
 // is order-independent, but the cache must never serve stale/mixed results).
-func TestTagResolver_buildUnmarshalIndexCache(t *testing.T) {
+func TestTagResolver_BuildUnmarshalIndexCache(t *testing.T) {
 	tp := reflect.TypeOf(testMarshalTags{})
 
 	def := newTagResolver()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime/multipart"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -97,7 +98,7 @@ func TestFilePtrFieldValuePartSkipped(t *testing.T) {
 
 // Bug #1: file fields must accept any tag key (form, json, xml, protobuf, Go name),
 // matching how value fields behave.
-func TestFileFieldAcceptsJSONTagKey(t *testing.T) {
+func TestFile_FieldAcceptsJSONTagKey(t *testing.T) {
 	type S struct {
 		Avatar File `json:"avatar" form:"avatar_file"`
 	}
@@ -120,7 +121,7 @@ func TestFileFieldAcceptsJSONTagKey(t *testing.T) {
 	}
 }
 
-func TestFileSliceAcceptsJSONTagKey(t *testing.T) {
+func TestFile_SliceAcceptsJSONTagKey(t *testing.T) {
 	type S struct {
 		Docs []File `json:"docs" form:"doc_files"`
 	}
@@ -135,7 +136,7 @@ func TestFileSliceAcceptsJSONTagKey(t *testing.T) {
 	}
 }
 
-func TestFilePtrAcceptsJSONTagKey(t *testing.T) {
+func TestFile_PtrAcceptsJSONTagKey(t *testing.T) {
 	type S struct {
 		Avatar *File `json:"avatar" form:"avatar_file"`
 	}
@@ -152,7 +153,7 @@ func TestFilePtrAcceptsJSONTagKey(t *testing.T) {
 
 // Bug #2: WithStrictUnmarshal must reject unknown multipart file parts,
 // matching the value-field behavior.
-func TestStrictUnmarshalRejectsUnknownFilePart(t *testing.T) {
+func TestFile_StrictUnmarshalRejectsUnknownPart(t *testing.T) {
 	type S struct {
 		Doc File `form:"doc"`
 	}
@@ -169,7 +170,7 @@ func TestStrictUnmarshalRejectsUnknownFilePart(t *testing.T) {
 	}
 }
 
-func TestStrictUnmarshalAcceptsKnownFilePart(t *testing.T) {
+func TestFile_StrictUnmarshalAcceptsKnownPart(t *testing.T) {
 	type S struct {
 		Doc File `form:"doc"`
 	}
@@ -184,7 +185,7 @@ func TestStrictUnmarshalAcceptsKnownFilePart(t *testing.T) {
 	}
 }
 
-func TestStrictUnmarshalAcceptsKnownFileAlias(t *testing.T) {
+func TestFile_StrictUnmarshalAcceptsKnownAlias(t *testing.T) {
 	type S struct {
 		Doc File `json:"docx" form:"doc"`
 	}
@@ -200,7 +201,7 @@ func TestStrictUnmarshalAcceptsKnownFileAlias(t *testing.T) {
 }
 
 // Strict enforcement must also work via the Decoder/UnmarshalMultipartForm path.
-func TestStrictUnknownFilePartViaDecoder(t *testing.T) {
+func TestFile_StrictUnknownPartViaDecoder(t *testing.T) {
 	type S struct {
 		Doc File `form:"doc"`
 	}
@@ -236,7 +237,7 @@ type embedUploadReq struct {
 	Doc File `form:"doc"`
 }
 
-func TestUnmarshal_EmbeddedStructFileMultipart(t *testing.T) {
+func TestFile_EmbeddedStructFileMultipart(t *testing.T) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	if fw, err := mw.CreateFormField("title"); err != nil {
@@ -278,7 +279,7 @@ type uploadFileCollide struct {
 	Doc File `form:"doc"`
 }
 
-func TestUnmarshal_AmbiguousFilePartSiblings(t *testing.T) {
+func TestFile_AmbiguousPartSiblings(t *testing.T) {
 	type S struct {
 		Doc  File `form:"doc"`
 		Blob File `form:"doc"`
@@ -299,7 +300,7 @@ func TestUnmarshal_AmbiguousFilePartSiblings(t *testing.T) {
 	}
 }
 
-func TestUnmarshal_AmbiguousFilePartEmbedded(t *testing.T) {
+func TestFile_AmbiguousPartEmbedded(t *testing.T) {
 	body, ct := buildAliasBody(t, "doc", "dup")
 	var v uploadFileCollide
 	err := Unmarshal(body, ct, &v)
@@ -408,7 +409,7 @@ func TestMarshalUnmarshal_RoundTrip_NestedFilePointer(t *testing.T) {
 // A nested required field stays satisfied when the value arrives alongside a
 // file part (the multipart provided-key set must include both value and file
 // keys at their full nesting).
-func TestRequiredNestedProvidedWithFilePart(t *testing.T) {
+func TestFile_RequiredNestedProvidedWithPart(t *testing.T) {
 	type req struct {
 		ShipTo struct {
 			City string `form:"city,required"`
@@ -447,7 +448,7 @@ func TestRequiredNestedProvidedWithFilePart(t *testing.T) {
 // Regressions (Issue 9): a File with an empty Filename (e.g. the zero value)
 // produces a filename="" multipart part that the library itself refuses to
 // decode. The encoder now skips such parts, so the body round-trips cleanly.
-func TestMarshal_SkipsFileWithoutFilename(t *testing.T) {
+func TestFile_MarshalSkipsWithoutFilename(t *testing.T) {
 	type s struct {
 		Avatar File   `form:"avatar"`
 		Docs   []File `form:"docs"`
@@ -479,7 +480,7 @@ func TestMarshal_SkipsFileWithoutFilename(t *testing.T) {
 	}
 }
 
-func TestMarshal_ZeroFileBodyDecodable(t *testing.T) {
+func TestFile_ZeroBodyDecodable(t *testing.T) {
 	type s struct {
 		Avatar File `form:"avatar"`
 	}
@@ -651,5 +652,101 @@ func TestMarshalUnmarshal_RoundTrip_FileInMapStruct(t *testing.T) {
 	}
 	if s, ok := strict.M["k"]; !ok || string(s.Bin.Content) != "y" {
 		t.Fatalf("strict file inside map-of-struct lost: %+v", strict.M)
+	}
+}
+
+type uploadStruct struct {
+	Title  string `form:"title"`
+	Avatar File   `form:"avatar"`
+	Docs   []File `form:"documents"`
+}
+
+func TestFile_MarshalMultipartFiles(t *testing.T) {
+	enc := NewEncoder()
+	in := uploadStruct{
+		Title:  "hello",
+		Avatar: File{Content: []byte("png-data"), ContentType: "image/png", Filename: "a.png"},
+		Docs: []File{
+			{Content: []byte("doc1"), ContentType: "text/plain", Filename: "d1.txt"},
+			{Content: []byte("doc2"), ContentType: "text/plain", Filename: "d2.txt"},
+		},
+	}
+
+	body, contentType, err := enc.MarshalMultipart(in)
+	if err != nil {
+		t.Fatalf("marshal multipart error: %v", err)
+	}
+
+	// Parse back via an http request.
+	req := httptest.NewRequest("POST", "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	if err := req.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("parse multipart: %v", err)
+	}
+
+	if req.FormValue("title") != "hello" {
+		t.Errorf("title = %q", req.FormValue("title"))
+	}
+
+	var out uploadStruct
+	dec := NewDecoder()
+	if err := dec.UnmarshalMultipart(req, &out); err != nil {
+		t.Fatalf("unmarshal multipart error: %v", err)
+	}
+
+	if out.Title != "hello" {
+		t.Errorf("Title = %q", out.Title)
+	}
+	if string(out.Avatar.Content) != "png-data" {
+		t.Errorf("Avatar.Content = %q", out.Avatar.Content)
+	}
+	if out.Avatar.Filename != "a.png" {
+		t.Errorf("Avatar.Filename = %q", out.Avatar.Filename)
+	}
+	if len(out.Docs) != 2 {
+		t.Fatalf("Docs len = %d", len(out.Docs))
+	}
+	if out.Docs[0].Filename != "d1.txt" || string(out.Docs[1].Content) != "doc2" {
+		t.Errorf("Docs = %+v", out.Docs)
+	}
+}
+
+func TestFile_FromRequestNoFiles(t *testing.T) {
+	req := httptest.NewRequest("POST", "/", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatalf("parse form: %v", err)
+	}
+	files, err := FilesFromRequest(req, "nonexistent")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if files != nil {
+		t.Errorf("expected nil files, got %v", files)
+	}
+}
+
+func TestFile_FromHeaderDetectContentType(t *testing.T) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("f", "x.txt")
+	_, _ = fw.Write([]byte("hello file content"))
+	_ = mw.Close()
+
+	req := httptest.NewRequest("POST", "/", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if err := req.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	f, err := FileFromHeader(req.MultipartForm.File["f"][0])
+	if err != nil {
+		t.Fatalf("FileFromHeader: %v", err)
+	}
+	if string(f.Content) != "hello file content" {
+		t.Errorf("content = %q", f.Content)
+	}
+	if f.ContentType == "" {
+		t.Error("expected detected content type")
 	}
 }

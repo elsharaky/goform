@@ -3,7 +3,6 @@ package goform
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"mime/multipart"
 	"net/url"
 	"reflect"
@@ -41,176 +40,6 @@ func TestParseKeyPath(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-type encodeBasic struct {
-	Name  string `form:"name"`
-	Age   int    `form:"age"`
-	Score float64
-	Tags  []string `form:"tags"`
-}
-
-func TestEncoder_Marshal_Basic(t *testing.T) {
-	enc := NewEncoder()
-	vals, err := enc.Marshal(encodeBasic{
-		Name:  "alice",
-		Age:   30,
-		Score: 9.5,
-		Tags:  []string{"a", "b"},
-	})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	expected := url.Values{
-		"name":    {"alice"},
-		"age":     {"30"},
-		"Score":   {"9.5"},
-		"tags[0]": {"a"},
-		"tags[1]": {"b"},
-	}
-	for k, exp := range expected {
-		if got := vals[k]; !reflect.DeepEqual(got, exp) {
-			t.Errorf("key %q = %v, want %v", k, got, exp)
-		}
-	}
-}
-
-type encodeNested struct {
-	Personal struct {
-		Name  string `form:"name"`
-		Email string `form:"email"`
-	} `form:"personal"`
-}
-
-func TestEncoder_Marshal_Nested(t *testing.T) {
-	enc := NewEncoder()
-	in := encodeNested{}
-	in.Personal.Name = "bob"
-	in.Personal.Email = "bob@x.com"
-	vals, err := enc.Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("personal.name") != "bob" {
-		t.Errorf("personal.name = %q", vals.Get("personal.name"))
-	}
-	if vals.Get("personal.email") != "bob@x.com" {
-		t.Errorf("personal.email = %q", vals.Get("personal.email"))
-	}
-}
-
-type encodeMaps struct {
-	Attr map[string]string `form:"attr"`
-}
-
-func TestEncoder_Marshal_Map(t *testing.T) {
-	enc := NewEncoder()
-	vals, err := enc.Marshal(encodeMaps{Attr: map[string]string{"x": "1", "y": "2"}})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("attr[x]") != "1" {
-		t.Errorf("attr[x] = %q", vals.Get("attr[x]"))
-	}
-	if vals.Get("attr[y]") != "2" {
-		t.Errorf("attr[y] = %q", vals.Get("attr[y]"))
-	}
-}
-
-type encodeOmit struct {
-	A string `form:"a,omitempty"`
-	B string `form:"b"`
-}
-
-func TestEncoder_Marshal_OmitEmpty(t *testing.T) {
-	enc := NewEncoder()
-	vals, err := enc.Marshal(encodeOmit{B: "x"})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if _, ok := vals["a"]; ok {
-		t.Error("omitempty field should be omitted")
-	}
-	if vals.Get("b") != "x" {
-		t.Errorf("b = %q", vals.Get("b"))
-	}
-}
-
-type encodeTime struct {
-	Created time.Time `form:"created"`
-}
-
-func TestEncoder_Marshal_Time(t *testing.T) {
-	enc := NewEncoder()
-	ts, _ := time.Parse(time.RFC3339, "2024-01-02T15:04:05Z")
-	vals, err := enc.Marshal(encodeTime{Created: ts})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("created") != "2024-01-02T15:04:05Z" {
-		t.Errorf("created = %q", vals.Get("created"))
-	}
-}
-
-func TestEncoder_Marshal_Layout_Option(t *testing.T) {
-	enc := NewEncoder(WithTimeLayout("2006-01-02"))
-	ts, _ := time.Parse(time.RFC3339, "2024-01-02T15:04:05Z")
-	vals, err := enc.Marshal(encodeTime{Created: ts})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("created") != "2024-01-02" {
-		t.Errorf("created = %q", vals.Get("created"))
-	}
-}
-
-type encodeEmbedded struct {
-	encodeBasic
-	Extra string `form:"extra"`
-}
-
-func TestEncoder_Marshal_Embedded(t *testing.T) {
-	enc := NewEncoder()
-	vals, err := enc.Marshal(encodeEmbedded{encodeBasic{Name: "n", Age: 1}, "e"})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("name") != "n" {
-		t.Errorf("name = %q", vals.Get("name"))
-	}
-	if vals.Get("extra") != "e" {
-		t.Errorf("extra = %q", vals.Get("extra"))
-	}
-}
-
-func TestEncoder_Marshal_NonStruct(t *testing.T) {
-	enc := NewEncoder()
-	_, err := enc.Marshal(42)
-	if err == nil {
-		t.Fatal("expected error for non-struct")
-	}
-}
-
-func TestEncoder_Marshal_Pointer(t *testing.T) {
-	enc := NewEncoder()
-	vals, err := enc.Marshal(&encodeBasic{Name: "p"})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("name") != "p" {
-		t.Errorf("name = %q", vals.Get("name"))
-	}
-}
-
-func TestEncoder_Marshal_FileError(t *testing.T) {
-	enc := NewEncoder()
-	in := struct {
-		F File `form:"f"`
-	}{}
-	_, err := enc.Marshal(in)
-	if err == nil {
-		t.Fatal("expected file error in url.Values marshalling")
 	}
 }
 
@@ -378,7 +207,7 @@ func TestDecoder_Unmarshal_Strict_Ignored(t *testing.T) {
 // Regression: non-strict mode ignored unknown TOP-LEVEL keys while still
 // rejecting unknown paths below a known field ("addr.zip") and structural
 // mismatches ("age[0]" on an int, "age.name"). Nested unknowns must be as
-// lenient as top-level ones; WithStrictUnmarshal keeps rejecting them.
+
 func TestDecoder_Unmarshal_NonStrictNestedLenient(t *testing.T) {
 	type addr struct {
 		City string `form:"city"`
@@ -515,7 +344,7 @@ func TestDecoder_Unmarshal_MapOfStruct(t *testing.T) {
 // Regression: distinct keys targeting the same map-of-struct element
 // ("m[key].name" + "m[key].age", or a struct entry later completed by a file
 // part "m[key].bin") must merge into one entry instead of each replacing the
-// previous one.
+
 func TestDecoder_Unmarshal_MapOfStructKeysMerge(t *testing.T) {
 	dec := NewDecoder()
 	vals := url.Values{
@@ -539,7 +368,7 @@ func TestDecoder_Unmarshal_MapOfStructKeysMerge(t *testing.T) {
 // Regression: promoted fields from an embedded struct must be addressed by an
 // index that is valid on the OUTER struct (embedded field's index prepended),
 // not the embedded type's own index. Previously the value was silently dropped
-// or landed in an unrelated sibling field.
+
 type decodeEmbedCreds struct {
 	Token string `form:"token,required"`
 }
@@ -574,7 +403,6 @@ func TestDecoder_Unmarshal_EmbeddedPromotedFieldAndSibling(t *testing.T) {
 	}
 }
 
-// Required must fire for an embedded field's promoted key that was never set.
 func TestDecoder_Unmarshal_EmbeddedPromotedFieldRequired(t *testing.T) {
 	dec := NewDecoder()
 	var r decodeEmbedReq
@@ -608,40 +436,6 @@ func TestDecoder_Unmarshal_EmbeddedPromotedFieldMultipart(t *testing.T) {
 // namespace just like value embeds, mirroring encoding/json. The encoder emits
 // the promoted field name, decoding a promoted key allocates the nil embedded
 // pointer, the explicit "Inner.sub" key stays valid for older payloads, and
-// required applies to a non-nil embed's promoted fields.
-type PtrEmbedInner struct {
-	Name string `form:"name"`
-}
-
-type ptrEmbedReq struct {
-	*PtrEmbedInner
-	Tag string `form:"tag"`
-}
-
-func TestEncoder_Marshal_PointerEmbeddedStructFlattened(t *testing.T) {
-	vals, err := NewEncoder().Marshal(ptrEmbedReq{PtrEmbedInner: &PtrEmbedInner{Name: "n"}, Tag: "t"})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("name") != "n" {
-		t.Errorf("name = %q, want flattened promoted key", vals.Get("name"))
-	}
-	if vals.Get("tag") != "t" {
-		t.Errorf("tag = %q", vals.Get("tag"))
-	}
-	if vals.Has("PtrEmbedInner.name") {
-		t.Errorf("unexpected dotted ptr-embed key: %v", vals)
-	}
-
-	// A nil embedded pointer contributes nothing (and does not error).
-	vals, err = NewEncoder().Marshal(ptrEmbedReq{Tag: "t"})
-	if err != nil {
-		t.Fatalf("marshal nil-embed error: %v", err)
-	}
-	if vals.Has("name") || vals.Get("tag") != "t" {
-		t.Errorf("nil-embed output = %v", vals)
-	}
-}
 
 func TestDecoder_Unmarshal_PointerEmbeddedPromotedField(t *testing.T) {
 	var r ptrEmbedReq
@@ -690,32 +484,6 @@ func TestDecoder_Unmarshal_PointerEmbeddedPromotedFieldRequired(t *testing.T) {
 	}
 }
 
-func TestMarshalUnmarshal_RoundTrip_PointerEmbeddedStruct(t *testing.T) {
-	var req struct {
-		*PtrEmbedInner
-		Tag string `form:"tag"`
-	}
-	req.PtrEmbedInner = &PtrEmbedInner{Name: "round"}
-	req.Tag = "t"
-
-	vals, err := NewEncoder().Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var got struct {
-		*PtrEmbedInner
-		Tag string `form:"tag"`
-	}
-	if err := NewDecoder().Unmarshal(vals, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Name != "round" || got.Tag != "t" {
-		t.Errorf("round trip = %+v", got)
-	}
-}
-
-// Regression: a client-supplied huge index must not force a huge allocation.
 func TestDecoder_Unmarshal_SliceIndexCapped(t *testing.T) {
 	type s struct {
 		Items []string `form:"items"`
@@ -779,7 +547,7 @@ func TestDecoder_Unmarshal_SliceIndexCapDisabled(t *testing.T) {
 }
 
 // Regression: an out-of-range index on a fixed-size array must return an
-// error, not panic.
+
 type decodeFixedArr struct {
 	Items [3]string `form:"items"`
 }
@@ -811,7 +579,7 @@ func TestDecoder_Unmarshal_ArrayWithinRange(t *testing.T) {
 // Regression: a tag name shared by an embedded (promoted) field and an outer
 // field, or by two sibling fields, previously decoded one field's payload into
 // whichever field the index happened to register last — the other field was
-// silently zeroed, with no error even under WithStrictUnmarshal.
+
 type decodeInner struct {
 	Name string `form:"name"`
 }
@@ -883,7 +651,7 @@ func TestDecoder_Unmarshal_AmbiguousNestedField(t *testing.T) {
 
 // Regression: a scalar parse failure on a plain field (int overflow, bad bool)
 // escaped as a bare error, unlike the same failure reached via a map/slice
-// value. Every decode failure must satisfy errors.As(..., &DecodingError{}).
+
 func TestDecoder_Unmarshal_ScalarErrorWrapped(t *testing.T) {
 	type s struct {
 		Int  int   `form:"int"`
@@ -917,7 +685,7 @@ func TestDecoder_Unmarshal_ScalarErrorWrapped(t *testing.T) {
 
 // Regression: float32 and complex64 previously parsed with 64-bit precision
 // and silently accepted out-of-range payloads as +Inf. They now parse with the
-// field's own bit size, so overflow is a decode error instead of +Inf data.
+
 func TestDecoder_Unmarshal_FloatOverflowRejected(t *testing.T) {
 	type s struct {
 		F32 float32   `form:"f32"`
@@ -951,89 +719,7 @@ func TestDecoder_Unmarshal_FloatOverflowRejected(t *testing.T) {
 
 // Regression: zero-valued time.Time was unconditionally omitted from marshal
 // output, unlike every other type (int → "0", string → ""), contradicting the
-// documented default that zero values are emitted. It now formats normally.
-func TestEncoder_Marshal_ZeroTimeEmitted(t *testing.T) {
-	type s struct {
-		When time.Time `form:"when"`
-	}
-	vals, err := NewEncoder().Marshal(s{})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Get("when") != "0001-01-01T00:00:00Z" {
-		t.Errorf("when = %q, want %q", vals.Get("when"), "0001-01-01T00:00:00Z")
-	}
-}
 
-func TestEncoder_Marshal_ZeroTimeOmittedWithOmitEmpty(t *testing.T) {
-	type s struct {
-		When time.Time `form:"when"`
-	}
-	vals, err := NewEncoder(WithZeroEmpty(true)).Marshal(s{})
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if vals.Has("when") {
-		t.Errorf("zero time should be omitted under WithZeroEmpty, got %v", vals)
-	}
-}
-
-// === Round-3 review regressions ===
-
-// roundTxtCode is a string-kind type implementing TextMarshaler/TextUnmarshaler.
-// Before the round-3 fix the encoder skipped string-kind TextMarshalers, so the
-// encoded value leaked raw while decoding still dispatched to UnmarshalText
-// (#11).
-type roundTxtCode string
-
-func (c roundTxtCode) MarshalText() ([]byte, error) {
-	return []byte("code:" + string(c)), nil
-}
-
-func (c *roundTxtCode) UnmarshalText(b []byte) error {
-	*c = roundTxtCode(strings.TrimPrefix(string(b), "code:"))
-	return nil
-}
-
-func TestEncoderDecoder_StringKindTextMarshalerSymmetric(t *testing.T) {
-	type s struct {
-		Code roundTxtCode `form:"code"`
-	}
-	in := s{Code: roundTxtCode("abc")}
-	vals, err := NewEncoder().Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if got := vals.Get("code"); got != "code:abc" {
-		t.Errorf("marshal = %q, want TextMarshaler output %q", got, "code:abc")
-	}
-	var out s
-	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-	if out.Code != "abc" {
-		t.Errorf("Code = %q, want %q", out.Code, "abc")
-	}
-}
-
-// txtPoint is a struct-kind type implementing TextMarshaler/TextUnmarshaler.
-// The encoder emits "X,Y" but the decoder used to ignore it because a struct
-// leaf has nowhere to store a scalar (#9/#11) — silent data loss.
-type txtPoint struct {
-	X, Y int
-}
-
-func (p txtPoint) MarshalText() ([]byte, error) {
-	return []byte(fmt.Sprintf("%d,%d", p.X, p.Y)), nil
-}
-
-func (p *txtPoint) UnmarshalText(b []byte) error {
-	_, err := fmt.Sscanf(string(b), "%d,%d", &p.X, &p.Y)
-	return err
-}
-
-// mutRefA and mutRefB are mutually-recursive pointer types used to reproduce
-// the buildUnmarshalIndex stack overflow before the round-3 cycle guard (#2).
 type mutRefB struct {
 	*mutRefA
 	BVal string `form:"bval"`
@@ -1044,52 +730,6 @@ type mutRefA struct {
 	AVal string `form:"aval"`
 }
 
-func TestEncoderDecoder_StructKindTextMarshalerSymmetric(t *testing.T) {
-	type s struct {
-		Loc txtPoint `form:"loc"`
-	}
-	in := s{Loc: txtPoint{X: 3, Y: 4}}
-	vals, err := NewEncoder().Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if got := vals.Get("loc"); got != "3,4" {
-		t.Errorf("marshal = %q, want %q", got, "3,4")
-	}
-	var out s
-	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-	if out.Loc != (txtPoint{X: 3, Y: 4}) {
-		t.Errorf("Loc = %+v, want {3 4}", out.Loc)
-	}
-}
-
-func TestEncoderDecoder_MultipartTextMarshalerRoundTrip(t *testing.T) {
-	enc := NewEncoder()
-	body, ct, err := enc.MarshalMultipart(struct {
-		Code roundTxtCode `form:"code"`
-		Loc  txtPoint     `form:"loc"`
-	}{Code: "abc", Loc: txtPoint{X: 5, Y: 6}})
-	if err != nil {
-		t.Fatalf("marshal multipart error: %v", err)
-	}
-	if !bytes.Contains(body, []byte("code:abc")) || !bytes.Contains(body, []byte("5,6")) {
-		t.Errorf("multipart body missing TextMarshaler output:\n%s", body)
-	}
-	var out struct {
-		Code roundTxtCode `form:"code"`
-		Loc  txtPoint     `form:"loc"`
-	}
-	if err := Unmarshal(body, ct, &out); err != nil {
-		t.Fatalf("unmarshal multipart error: %v", err)
-	}
-	if out.Code != "abc" || out.Loc != (txtPoint{X: 5, Y: 6}) {
-		t.Errorf("round trip = %+v/%+v", out.Code, out.Loc)
-	}
-}
-
-// #2: "type T struct{ *T }" used to blow the buildUnmarshalIndex stack.
 func TestDecoder_Unmarshal_SelfEmbeddedPointer(t *testing.T) {
 	type T struct {
 		*T
@@ -1115,7 +755,7 @@ func TestDecoder_Unmarshal_MutuallySelfEmbedded(t *testing.T) {
 }
 
 // #3: a dotted key against a slice used to re-dispatch into the leaf,
-// silently appending data ("lines.evil=x" added "x" to []string).
+
 func TestDecoder_Unmarshal_DotKeyOnSliceNotInjected(t *testing.T) {
 	type s struct {
 		Lines []string `form:"lines"`
@@ -1162,24 +802,6 @@ func TestDecoder_Unmarshal_DotKeyOnMapRejected(t *testing.T) {
 }
 
 // #4: integer struct tags forced map[string]int keys; values were previously
-// dropped because the parser treated "123"/"-1" as dot tokens.
-func TestEncoderDecoder_NumericKeyMapRoundTrip(t *testing.T) {
-	type s struct {
-		Nums map[string]int `form:"nums"`
-	}
-	in := s{Nums: map[string]int{"123": 5, "-1": 6}}
-	vals, err := NewEncoder().Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	var out s
-	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-	if len(out.Nums) != 2 || out.Nums["123"] != 5 || out.Nums["-1"] != 6 {
-		t.Errorf("Nums = %v, want {123:5 -1:6}", out.Nums)
-	}
-}
 
 func TestDecoder_Unmarshal_NumericKeyIntMap(t *testing.T) {
 	type s struct {
@@ -1194,46 +816,6 @@ func TestDecoder_Unmarshal_NumericKeyIntMap(t *testing.T) {
 	}
 }
 
-// #7: []byte is meant to be a single raw value, not a []byte of numeric bytes.
-func TestEncoderDecoder_BytesSingleValue(t *testing.T) {
-	type s struct {
-		Data []byte `form:"data"`
-	}
-	in := s{Data: []byte("hello\x00world")}
-	vals, err := NewEncoder().Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	if got := vals.Get("data"); got != "hello\x00world" {
-		t.Errorf("marshal = %q, want single raw value", got)
-	}
-	var out s
-	if err := NewDecoder().Unmarshal(vals, &out); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-	if !bytes.Equal(out.Data, in.Data) {
-		t.Errorf("round trip = %q, want %q", out.Data, in.Data)
-	}
-
-	var single s
-	if err := NewDecoder().Unmarshal(url.Values{"data": {"hi"}}, &single); err != nil {
-		t.Fatalf("single-value unmarshal: %v", err)
-	}
-	if string(single.Data) != "hi" {
-		t.Errorf("Data = %q, want %q", single.Data, "hi")
-	}
-
-	// indexed numeric form must keep working
-	var idx s
-	if err := NewDecoder().Unmarshal(url.Values{"data[0]": {"72"}}, &idx); err != nil {
-		t.Fatalf("indexed unmarshal: %v", err)
-	}
-	if string(idx.Data) != "H" {
-		t.Errorf("Data = %q, want %q", idx.Data, "H")
-	}
-}
-
-// #9: "map[string]Struct" with "m[k]=v" used to silently insert a zero struct.
 func TestDecoder_Unmarshal_MapScalarToStructErrors(t *testing.T) {
 	type item struct {
 		Label string `form:"label"`
@@ -1249,5 +831,165 @@ func TestDecoder_Unmarshal_MapScalarToStructErrors(t *testing.T) {
 	}
 	if len(out.Items) != 0 {
 		t.Errorf("Items = %+v; scalar must not create a zero entry", out.Items)
+	}
+}
+
+type defaultsReq struct {
+	Name   string `form:"name"`
+	Region string `form:"region,default:us-east"`
+	Count  int    `form:"count,default:5"`
+	Token  string `form:"token,required"`
+	Flag   bool   `form:"flag,default:true"`
+}
+
+func TestDecoder_DefaultTagAppliedWhenMissing(t *testing.T) {
+	var r defaultsReq
+	vals := url.Values{"name": {"x"}, "token": {"abc"}}
+	if err := NewDecoder().Unmarshal(vals, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.Region != "us-east" {
+		t.Errorf("Region = %q, want us-east", r.Region)
+	}
+	if r.Count != 5 {
+		t.Errorf("Count = %d, want 5", r.Count)
+	}
+	if !r.Flag {
+		t.Errorf("Flag = false, want true")
+	}
+	if r.Name != "x" || r.Token != "abc" {
+		t.Errorf("unexpected: %+v", r)
+	}
+}
+
+func TestDecoder_DefaultTagPreservesProvidedValue(t *testing.T) {
+	var r defaultsReq
+	vals := url.Values{"name": {"x"}, "region": {"eu-west"}, "token": {"abc"}}
+	if err := NewDecoder().Unmarshal(vals, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.Region != "eu-west" {
+		t.Errorf("Region = %q, want provided eu-west", r.Region)
+	}
+}
+
+func TestDecoder_RequiredMissing(t *testing.T) {
+	var r defaultsReq
+	vals := url.Values{"name": {"x"}} // token missing
+	err := NewDecoder().Unmarshal(vals, &r)
+	if err == nil {
+		t.Fatal("expected error for missing required field")
+	}
+	if !errors.Is(err, ErrMissingRequired) {
+		t.Errorf("expected ErrMissingRequired, got %v", err)
+	}
+	var de *DecodingError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected DecodingError, got %T", err)
+	}
+	if de.Key != "token" {
+		t.Errorf("DecodingError.Key = %q, want token", de.Key)
+	}
+}
+
+func TestDecoder_RequiredProvidedIsOK(t *testing.T) {
+	var r defaultsReq
+	vals := url.Values{"token": {"abc"}}
+	if err := NewDecoder().Unmarshal(vals, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.Token != "abc" {
+		t.Errorf("Token = %q", r.Token)
+	}
+}
+
+// Bug 2+3 regressions: required/default tracking must share the decoder's own
+// notion of "provided". A field delivered via a nested key ("ship_to.city") or
+// an alternate tag name (json:"reg") is provided — it must not raise a
+// spurious ErrMissingRequired, and its default must not clobber the value.
+type nestedDefaultsReq struct {
+	ShipTo struct {
+		City string `form:"city,required"`
+		Zip  string `form:"zip,default:69001"`
+	} `form:"ship_to"`
+}
+
+func TestDecoder_RequiredNestedProvidedIsOK(t *testing.T) {
+	var r nestedDefaultsReq
+	if err := NewDecoder().Unmarshal(url.Values{"ship_to.city": {"Lyon"}}, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.ShipTo.City != "Lyon" {
+		t.Errorf("City = %q, want Lyon", r.ShipTo.City)
+	}
+	if r.ShipTo.Zip != "69001" {
+		t.Errorf("Zip = %q, want default 69001", r.ShipTo.Zip)
+	}
+}
+
+func TestDecoder_RequiredNestedMissingStillErrors(t *testing.T) {
+	var r nestedDefaultsReq
+	err := NewDecoder().Unmarshal(url.Values{"ship_to.zip": {"1000"}}, &r)
+	if err == nil {
+		t.Fatal("expected error for missing nested required field")
+	}
+	if !errors.Is(err, ErrMissingRequired) {
+		t.Errorf("expected ErrMissingRequired, got %v", err)
+	}
+}
+
+func TestDecoder_DefaultNestedPreservesProvidedValue(t *testing.T) {
+	var r nestedDefaultsReq
+	if err := NewDecoder().Unmarshal(url.Values{"ship_to.city": {"Lyon"}, "ship_to.zip": {"1000"}}, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.ShipTo.Zip != "1000" {
+		t.Errorf("Zip = %q, want provided 1000 (default clobbered it)", r.ShipTo.Zip)
+	}
+}
+
+func TestDecoder_DefaultNestedAppliedWhenAbsent(t *testing.T) {
+	var r nestedDefaultsReq
+	if err := NewDecoder().Unmarshal(url.Values{"ship_to.city": {"Lyon"}}, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.ShipTo.Zip != "69001" {
+		t.Errorf("Zip = %q, want default 69001", r.ShipTo.Zip)
+	}
+}
+
+type altTagDefaultsReq struct {
+	Region string `form:"region,required" json:"reg"`
+	Zone   string `form:"zone,default:us" json:"zn"`
+}
+
+func TestDecoder_RequiredAltTagProvidedIsOK(t *testing.T) {
+	var r altTagDefaultsReq
+	if err := NewDecoder().Unmarshal(url.Values{"reg": {"eu"}}, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.Region != "eu" {
+		t.Errorf("Region = %q, want eu", r.Region)
+	}
+}
+
+func TestDecoder_DefaultAltTagPreservesProvidedValue(t *testing.T) {
+	var r altTagDefaultsReq
+	if err := NewDecoder().Unmarshal(url.Values{"reg": {"eu"}, "zn": {"eu-west"}}, &r); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if r.Zone != "eu-west" {
+		t.Errorf("Zone = %q, want provided eu-west (default clobbered it)", r.Zone)
+	}
+}
+
+func TestDecoder_RequiredAltTagMissingStillErrors(t *testing.T) {
+	var r altTagDefaultsReq
+	err := NewDecoder().Unmarshal(url.Values{"zn": {"eu-west"}}, &r)
+	if err == nil {
+		t.Fatal("expected error for missing required field")
+	}
+	if !errors.Is(err, ErrMissingRequired) {
+		t.Errorf("expected ErrMissingRequired, got %v", err)
 	}
 }
