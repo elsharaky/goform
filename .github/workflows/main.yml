@@ -1,11 +1,19 @@
 name: Version
 
-# On every push/merge to `main`, bump the semantic version based on the
-# commit message(s) (Conventional Commits), tag main with vX.Y.Z, and
-# publish the GitHub Release — all handled by semantic-release per .releaserc.
+# Only trigger when a pull request is merged into `main` (no release on bare
+# pushes). On merge, bump the semantic version based on the merged commit
+# message(s) (Conventional Commits), tag main with vX.Y.Z, and publish the
+# GitHub Release — all handled by semantic-release per .releaserc.
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches: [main]
+
+# Serialize release runs: if two PRs merge close together, only one job may
+# compute and push a tag at a time. Do not cancel an in-flight release.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write # to create tags and GitHub releases
@@ -13,11 +21,18 @@ permissions:
 jobs:
   release:
     name: Semantic Release
+    # The repo guard keeps this job from running in forks.
+    # NOTE: github.actor != 'github-actions[bot]' is defense-in-depth only and
+    # not a functional safeguard against loops — on pull_request: closed the
+    # actor is the person who merged the PR, never the release bot.
+    if: github.repository == 'elsharaky/goform' && github.event.pull_request.merged == true && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    if: github.repository == 'elsharaky/goform' && github.actor != 'github-actions[bot]'
     steps:
+      # Check out the merged state of `main` (not the PR head) so release
+      # analysis runs against the code that actually landed.
       - uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-go@v7
@@ -26,11 +41,35 @@ jobs:
           cache: true
 
       - name: Run tests
+        # Sanity re-run before tagging; the real quality gate (vet, lint,
+        # gosec, govulncheck, race tests) is the required `ci` check on the PR
+        # itself, enforced by branch protection.
         run: go test -race ./...
 
+      # semantic-release hardcodes the very first release to 1.0.0, but we
+      # want 0.1.0. Seed an annotated v0.0.0 baseline tag on the root commit
+      # only when no release tag exists yet, so the first merged feat/fix
+      # bumps 0.0.0 -> minor 0.1.0 (patch stays below for pre-release fixes).
+      - name: Seed baseline version tag
+        run: |
+          if [ -z "$(git tag --list 'v[0-9]*')" ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            root="$(git rev-list --max-parents=0 HEAD)"
+            git tag -a v0.0.0 "$root" -m 'v0.0.0 baseline before first release'
+            git push origin v0.0.0
+          fi
+
       # Reads .releaserc (commit-analyzer, release-notes-generator, github):
-      # analyzes Conventional Commits since the last tag, generates structured
-      # release notes, tags main with vX.Y.Z, and publishes the GitHub Release.
+      # analyzes Conventional Commits since the last tag. If the merged PR
+      # carries release-triggering commits (feat/fix/BREAKING), tags main with
+      # vX.Y.Z and publishes the GitHub Release; otherwise it exits quietly.
+      #
+      # .releaserc caps breaking commits to a minor bump (releaseRules:
+      # { breaking: true, release: "minor" }) so the pre-1.0 project lands at
+      # 0.1.0 instead of jumping to v1.0.0. When the project deliberately
+      # releases its first real v1.0.0, remove that override from .releaserc
+      # so breaking changes can bump the major version normally again.
       #
       # .releaserc uses the `conventionalcommits` preset, which lives in
       # `conventional-changelog-conventionalcommits`. semantic-release v24 has
