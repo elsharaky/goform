@@ -60,13 +60,30 @@ Example: `feat: add support for custom tag priority`
 
 ## Versioning & releases
 
-- `goform` follows [Semantic Versioning](https://semver.org/).
-- Releases are created automatically when a PR is merged into `main`: the
-  [Version workflow](.github/workflows/main.yml) runs semantic-release, which
-  computes the next version from Conventional Commits, tags the commit
-  (`vX.Y.Z`), and publishes the GitHub Release. The Go module proxy picks up
-  tagged versions automatically.
-- Do not bump versions in a PR unless asked.
+`goform` follows [Semantic Versioning](https://semver.org/) and releases through
+`semantic-release` in the [Version workflow](.github/workflows/main.yml). Two
+rules make releases predictable:
+
+1. **Work never releases by itself.** Merging `feat:`, `fix:`, or `perf:`
+   commits only *accumulates* changes — no tag, no release. This lets several
+   fixes land and ship together.
+2. **A marker releases everything accumulated.** A release happens only when a
+   PR merged into `main` includes a marker commit. Its scope picks the bump and
+   its notes include **every** work commit since the previous release tag:
+
+   | Marker | Bump |
+   |---|---|
+   | `release(patch): ...` | patch (e.g. `0.1.0 → 0.1.1`) |
+   | `release(minor): ...` | minor (e.g. `0.1.x → 0.2.0`) |
+   | `release(major): ...` | major (e.g. `0.x.y → 1.0.0`) |
+
+3. **What lands in the notes.** The changelog lists all commits since the last
+   tag, grouped by type (`feat:` → Features, `fix:` → Bug Fixes, `perf:` →
+   Performance Improvements); `chore:`/`ci:`/`docs:` are invisible. So a marker
+   ships exactly the user-facing work it waited for, and nothing else.
+
+The marker commit should be message-only (no code changes). Do not bump
+versions in a PR or on the CLI; the pipeline owns versioning.
 
 ## Code of conduct
 

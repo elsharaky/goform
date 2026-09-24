@@ -1,9 +1,15 @@
 name: Version
 
 # Only trigger when a pull request is merged into `main` (no release on bare
-# pushes). On merge, bump the semantic version based on the merged commit
-# message(s) (Conventional Commits), tag main with vX.Y.Z, and publish the
-# GitHub Release — all handled by semantic-release per .releaserc.
+# pushes). On merge, semantic-release (per .releaserc) decides whether this
+# merge produces a release:
+#   - work commits (feat/fix/perf/breaking) are pins to `release: false` and
+#     ACCUMULATE silently, tag + release are withheld;
+#   - an explicit release-marker commit (`release(patch|minor|major): ...`)
+#     publishes, bumping from the last tag and including every accumulated
+#     work commit since it in the changelog.
+# Releases never happen automatically from a fix/feat alone — they need the
+# marker. Tags vX.Y.Z and publishes the GitHub Release, all from CI.
 on:
   pull_request:
     types: [closed]
@@ -48,8 +54,8 @@ jobs:
 
       # semantic-release hardcodes the very first release to 1.0.0, but we
       # want 0.1.0. Seed an annotated v0.0.0 baseline tag on the root commit
-      # only when no release tag exists yet, so the first merged feat/fix
-      # bumps 0.0.0 -> minor 0.1.0 (patch stays below for pre-release fixes).
+      # only when no release tag exists yet, so the first release-marker
+      # (`release(minor)`) bumps 0.0.0 -> 0.1.0.
       - name: Seed baseline version tag
         run: |
           if [ -z "$(git tag --list 'v[0-9]*')" ]; then
@@ -61,21 +67,16 @@ jobs:
           fi
 
       # Reads .releaserc (commit-analyzer, release-notes-generator, github):
-      # analyzes Conventional Commits since the last tag. If the merged PR
-      # carries release-triggering commits (feat/fix/BREAKING), tags main with
-      # vX.Y.Z and publishes the GitHub Release; otherwise it exits quietly.
+      # analyzes Conventional Commits since the last tag. Normal work commits
+      # (feat/fix/perf/breaking) are mapped to `release: false`, so they only
+      # accumulate. A release happens only when the merged PR includes a
+      # `release(patch|minor|major): ...` marker commit — its scope decides
+      # the bump and the changelog includes every accumulated work commit.
       #
-      # .releaserc caps breaking commits to a minor bump (releaseRules:
-      # { breaking: true, release: "minor" }) so the pre-1.0 project lands at
-      # 0.1.0 instead of jumping to v1.0.0. When the project deliberately
-      # releases its first real v1.0.0, remove that override from .releaserc
-      # so breaking changes can bump the major version normally again.
-      #
-      # .releaserc uses the `conventionalcommits` preset, which lives in
-      # `conventional-changelog-conventionalcommits`. semantic-release v24 has
-      # the angular preset built in, but the conventionalcommits preset is an
-      # external package that must be pre-installed (pinned to the v8 line that
-      # is compatible with semantic-release >= 24).
+      # The github plugin publishes the release only; the plugin is instantiated
+      # with the conventionalcommits preset. semantic-release v24 has the angular
+      # preset built in, but conventionalcommits is an external package that must
+      # be pre-installed (pinned to the v8 line compatible with semantic-release >= 24).
       - name: Semantic Release
         uses: cycjimmy/semantic-release-action@v6
         with:
