@@ -61,11 +61,17 @@ Example: `feat: add support for custom tag priority`
 ## Versioning & releases
 
 - `goform` follows [Semantic Versioning](https://semver.org/).
-- Releases are created automatically when a PR is merged into `main`: the
-  [Version workflow](.github/workflows/main.yml) runs semantic-release, which
-  computes the next version from Conventional Commits, tags the commit
-  (`vX.Y.Z`), and publishes the GitHub Release. The Go module proxy picks up
-  tagged versions automatically.
+- Releases are **explicit**: merging `feat:`/`fix:` work alone never creates a
+  release. A release happens only when a PR merged into `main` includes a
+  release-marker commit; its scope decides the bump:
+  - `release(patch): ...` → patch (`0.1.0 → 0.1.1`)
+  - `release(minor): ...` → minor (`0.1.x → 0.2.0`)
+  - `release(major): ...` → major (`0.x.y → 1.0.0`)
+- Work commits (`feat`/`fix`/`perf`/breaking) accumulate unreleased; when the
+  marker lands, the [Version workflow](.github/workflows/main.yml) runs
+  semantic-release, tags the commit (`vX.Y.Z`), and publishes a GitHub Release
+  whose notes include everything accumulated since the previous release.
+- The marker commit should be message-only (no code changes).
 - Do not bump versions in a PR unless asked.
 
 ## Code of conduct
