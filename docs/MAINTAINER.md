@@ -366,14 +366,98 @@ govulncheck ./...
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of these on every PR. Security
-scanning (CodeQL), release automation (`main.yml` running semantic-release,
-which tags `vX.Y.Z` and publishes the GitHub Release from Conventional
-Commits; no goreleaser since this is a pure library), and dependabot are
-configured.
+scanning (CodeQL) and dependabot are configured. Release automation lives in
+`.github/workflows/main.yml` — see [Release process](#11-release-process) below;
+no goreleaser since this is a pure library.
 
 ---
 
-## 11. How to extend
+## 11. Release process
+
+This project uses [semantic-release](https://semantic-release.gitbook.io) with
+an **explicit-release model**: ordinary work merges never release by themselves;
+releases are triggered only by a dedicated release-marker commit. This section
+explains the workflow in `.github/workflows/main.yml`, the rules in
+`.releaserc`, and the exact semantics of each.
+
+### 11.1 The trigger
+
+The `Version` workflow fires on `pull_request` closed + **merged** into `main`
+(no release on bare pushes), with a `release` concurrency group so two close
+merges can't race on tag creation. It checks out the merged state of `main`
+(`fetch-depth: 0`) and runs `go test -race ./...` as a sanity re-run; the real
+quality gate is the required `ci` check on the PR itself (vet, lint, gosec,
+govulncheck, race tests) enforced by branch protection.
+
+### 11.2 The rules (`.releaserc`)
+
+`releaseRules` are evaluated **in order, first match wins**, per commit:
+
+1. `release(patch)` / `release(minor)` / `release(major)` — the **markers**;
+   they are the only commits that can produce a release. Their scope picks the
+   bump.
+2. `breaking: true → release: false`, `fix/feat/perf/revert → release: false` —
+   ordinary work is pinned to "no release" so it only accumulates.
+
+Since semantic-release analyzes **all** commits since the last release tag, the
+highest-scoped marker in the window decides the bump (e.g. a `release(patch)`
+window containing a `release(major)` produces a major). The marker is the "go"
+signal, never the only content of a release.
+
+### 11.3 The commit window
+
+`semantic-release` does not look at the merged PR alone. It collects **every
+commit reachable from `main` since the last non-prerelease release tag** (the
+seeded baseline for the first release, see [11.4](#114-the-first-release-semantic-release-quirk)) and then:
+
+- **Version:** `commit-analyzer` maps each commit through `releaseRules` and
+  takes the highest bump found (the marker scope).
+- **Changelog:** `release-notes-generator` lists every commit in the window,
+  grouped by type (`feat` → Features, `fix` → Bug Fixes, `perf` → Performance
+  Improvements); `chore`/`ci`/`docs`/`refactor` are hidden by the
+  `conventionalcommits` preset, so housekeeping stays out of the notes.
+
+Consequences:
+
+- A `feat:`/`fix:` merged before a marker is automatically swept into that
+  release's notes — you never hand-pick what ships.
+- A `feat:`/`fix:` merged **after** a release tag belongs to the *next* window
+  and waits for the next marker.
+- Marker commits themselves produce no changelog line; they are the version
+  decision, not content.
+
+### 11.4 The first release (semantic-release quirk)
+
+`semantic-release` hardcodes the **very first** release to `1.0.0`. To honor
+SemVer and start this project at `0.1.0`, the workflow seeds an annotated
+`v0.0.0` tag on the **root commit** exactly when no `v[0-9]*` tags exist yet
+(no-op on later runs). The first `release(minor)` marker then bumps `0.0.0 →
+0.1.0`.
+
+### 11.5 Making a release, step by step
+
+1. Ensure the work to ship is merged into `main` (`feat:`/`fix:`/`perf:`
+   commits — they require no marker to land).
+2. Create a branch off `main`, add a **message-only** empty commit
+   (e.g. `git commit --allow-empty -m "release(minor): ship ..."`), open a PR,
+   merge it.
+3. The workflow tags `main` `v<computed>` and publishes a GitHub Release whose
+   notes include all accumulated user-facing work.
+4. Verify the tag and release on GitHub; patch-level follow-ups repeat the
+   process with a `release(patch)` marker.
+
+### 11.6 Anti-patterns
+
+- **Naming work as markers.** Labeling a real change `release(...)` pollutes
+  the commit-window logic; markers must be message-only.
+- **Multiple markers in one window.** Two markers of different scopes ship as
+  the higher scope; use one marker per release window.
+- **Bumping versions by hand.** Versioning is owned by the pipeline; a manual
+  version bump or tag will collide with `semantic-release`.
+
+---
+
+## 12. How to extend
 
 - **New supported type** → usually handled automatically by reflection; or add
   a built-in converter in `types.go` and register it in `defaultConfig`.
@@ -385,7 +469,7 @@ configured.
 
 ---
 
-## 12. Common pitfalls to remember
+## 13. Common pitfalls to remember
 
 - Depth must be threaded through *every* recursion point, or cyclic structs
   break the stack and `WithMaxDepth` silently stops working.
